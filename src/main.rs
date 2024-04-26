@@ -1,3 +1,5 @@
+use std::{fs::File, io::Write, path::Path};
+
 use evdev::{uinput::VirtualDeviceBuilder, AbsoluteAxisType, AttributeSet, EventType, InputEvent, InputEventKind, Key, RelativeAxisType};
 
 pub enum MouseState{
@@ -30,10 +32,13 @@ fn main() -> std::io::Result<()>{
             RelativeAxisType::REL_WHEEL,
             RelativeAxisType::REL_WHEEL_HI_RES
         ]))?.build()?;
+        
     // Export location  of fake mouse evdev event
+    let file_path = Path::new("/tmp/virtual-trackpad");
     if let Some(event) = fake_mouse.get_syspath()?.as_path().read_dir()?.flatten().find(|child| child.file_name().into_string().unwrap().starts_with("event")){
-        std::env::set_var("VIRTUAL_MOUSE_EVENT_ID", "/dev/input/".to_owned() + event.file_name().to_str().unwrap());
-    }else {return Ok(());}
+        let mut file = File::create(file_path)?;
+        file.write_all(("/dev/input/".to_owned() + event.file_name().to_str().unwrap()).as_bytes())?;
+    }else {return Err(std::io::Error::from_raw_os_error(2));}
 
     let mut state = MouseState::None;
     let mut old_pos: (i32, i32) = (0, 0);
@@ -66,8 +71,9 @@ fn main() -> std::io::Result<()>{
             MouseState::None => {}
         }
         old_pos = cur_pos;
+        
         // exit program if STOP_TRACKPAD is set
-        if std::env::var_os("STOP_VIRTUAL_TRACKPAD").is_some_and(|value| value == "1") {break;}
+        if !file_path.exists() {break;}
     }
     trackpad.ungrab().unwrap();
     return Ok(());
