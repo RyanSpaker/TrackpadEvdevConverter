@@ -1,105 +1,141 @@
-use std::{fs::{self, File}, io::Write, path::Path, sync::{atomic::{AtomicBool, Ordering}, Arc}};
+use std::{env::args, fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::Path, process, sync::{Arc, Mutex}};
+use communicator::{Communicator, CommunicatorResultFuture};
+use dbus::{channel::MatchingReceiver, message::MatchRule, nonblock, MethodErr};
+use dbus_crossroads::{Crossroads, IfaceBuilder};
+use dbus_tokio::connection;
+use input::{Libinput, LibinputInterface};
+use libc::{O_RDONLY, O_RDWR, O_WRONLY};
+use manager::MouseManager;
 
-use evdev::{uinput::VirtualDeviceBuilder, AbsoluteAxisType, AttributeSet, EventType, InputEvent, InputEventKind, Key, RelativeAxisType};
+pub mod mouse;
+pub mod manager;
+pub mod communicator;
 
-pub enum MouseState{
-    None,
-    StartedTracking,
-    Tracking,
-    StartedScrolling,
-    Scrolling
+
+struct Interface;
+impl LibinputInterface for Interface {
+    fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
+        OpenOptions::new()
+            .custom_flags(flags)
+            .read((flags & O_RDONLY != 0) | (flags & O_RDWR != 0))
+            .write((flags & O_WRONLY != 0) | (flags & O_RDWR != 0))
+            .open(path)
+            .map(|file| file.into())
+            .map_err(|err| err.raw_os_error().unwrap())
+    }
+    fn close_restricted(&mut self, fd: OwnedFd) {
+        drop(File::from(fd));
+    }
 }
-fn main() -> std::io::Result<()>{
-    let args = std::env::args_os().map(|os_string| os_string.into_string().unwrap()).collect::<Vec<String>>();
-    if args.len() <= 1 {
-        eprintln!("Error: Tool must be run with path to trackpad evdev event input");
-        return Err(std::io::Error::from_raw_os_error(1));
-    }
-    let mut trackpad = match evdev::Device::open(&args[1]) {
-        Ok(dev) => {dev},
-        Err(er) => {
-            eprintln!("Error: could not open the trackpad at: {}", args[1]);
-            return Err(er);
-        }
-    };
-    trackpad.grab().expect("Failed to grab trackpad");
-    // Create fake mouse
-    let mut fake_mouse = VirtualDeviceBuilder::new()?
-        .name("virtual-mouse")
-        .with_relative_axes(&AttributeSet::from_iter([
-            RelativeAxisType::REL_X,
-            RelativeAxisType::REL_Y,
-            RelativeAxisType::REL_WHEEL,
-            RelativeAxisType::REL_WHEEL_HI_RES
-        ]))?
-        .with_keys(&AttributeSet::from_iter([
-            Key::BTN_LEFT,
-            Key::BTN_RIGHT
-        ]))?.build()?;
-    // Export location  of fake mouse evdev event
-    let file_path = Path::new("/tmp/virtual-trackpad");
-    if let Some(event) = fake_mouse.get_syspath()?.as_path().read_dir()?.flatten().find(|child| child.file_name().into_string().unwrap().starts_with("event")){
-        let mut file = File::create(file_path)?;
-        file.write_all(("/dev/input/".to_owned() + event.file_name().to_str().unwrap()).as_bytes())?;
-    }else {return Err(std::io::Error::from_raw_os_error(2));}
-    let mut state = MouseState::None;
-    let mut old_pos: (i32, i32) = (0, 0);
-    let mut cur_pos: (i32, i32) = (0, 0);
-    let mut relative: (i32, i32) = (0, 0);
-    let mut send_button_left = false;
-    let mut button_val_left = 0;
-    let mut send_button_right = false;
-    let mut button_val_right = 0;
 
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-    }).unwrap();
-    while running.load(Ordering::SeqCst) {
-        //Update fake mouse
-        trackpad.fetch_events()?.for_each(|event| {
-            match event.kind(){
-                InputEventKind::Key(Key::BTN_TOUCH) => {if event.value() == 0 {state = MouseState::None;}},
-                InputEventKind::Key(Key::BTN_TOOL_FINGER) => {if event.value() == 1 {state = MouseState::StartedTracking;}},
-                InputEventKind::Key(Key::BTN_TOOL_DOUBLETAP) => {if event.value() == 1 {state = MouseState::StartedScrolling;}},
-                InputEventKind::AbsAxis(AbsoluteAxisType::ABS_X) => {cur_pos.0 = event.value();},
-                InputEventKind::AbsAxis(AbsoluteAxisType::ABS_Y) => {cur_pos.1 = event.value();},
-                InputEventKind::Key(Key::BTN_LEFT) => {send_button_left = true; button_val_left = event.value();}
-                InputEventKind::Key(Key::BTN_RIGHT) => {send_button_right = true; button_val_right = event.value();}
-                _ => {}
-            };
-        });
-        relative.0 = cur_pos.0 - old_pos.0; relative.1 = cur_pos.1 - old_pos.1;
-        match state{
-            MouseState::StartedTracking => {state = MouseState::Tracking;},
-            MouseState::StartedScrolling => {state = MouseState::Scrolling;},
-            MouseState::Tracking => {fake_mouse.emit(&[
-                InputEvent::new(EventType::RELATIVE, RelativeAxisType::REL_X.0, relative.0),
-                InputEvent::new(EventType::RELATIVE, RelativeAxisType::REL_Y.0, relative.1)
-            ])?;},
-            MouseState::Scrolling => {fake_mouse.emit(&[
-                InputEvent::new(EventType::RELATIVE, RelativeAxisType::REL_WHEEL.0, relative.1),
-                InputEvent::new(EventType::RELATIVE, RelativeAxisType::REL_WHEEL_HI_RES.0, relative.1*100),
-            ])?;},
-            MouseState::None => {}
-        }
-        if send_button_left {
-            fake_mouse.emit(&[
-                InputEvent::new(EventType::KEY, Key::BTN_LEFT.code(), button_val_left)
-            ])?;
-        }
-        if send_button_right {
-            fake_mouse.emit(&[
-                InputEvent::new(EventType::KEY, Key::BTN_RIGHT.code(), button_val_right)
-            ])?;
-        }
-        old_pos = cur_pos;
-        send_button_left = false; send_button_right = false;
-        // exit program if STOP_TRACKPAD is set
-        if !file_path.exists() {break;}
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments = args().skip(1).collect::<Vec<String>>();
+    if arguments.len() == 0 || arguments[0] == "--server" {
+        server().await;
     }
-    trackpad.ungrab().unwrap();
-    fs::remove_file("/tmp/virtual-trackpad").ok();
-    return Ok(());
+    //client
+    
+    // Setup DBus connection
+    let (resource, conn) = match connection::new_session_sync() {
+        Ok(val) => {val}, 
+        Err(err) => {panic!("Failed to connect to the D-Bus Session: {}", err)}
+    };
+    let _handle = tokio::spawn(async {
+        let err = resource.await;
+        panic!("Lost connection to D-Bus: {}", err);
+    });
+
+    let mut data_source = Libinput::new_from_path(Interface);
+    let device = data_source.path_add_device("/dev/input/by-path/pci-0000:00:15.0-platform-i2c_designware.0-event-mouse");
+    println!("device: {:?}", device);
+
+    let proxy = nonblock::Proxy::new("com.cowsociety.virtual_mouse", "/", std::time::Duration::from_secs(2), conn.clone());
+    let (name, input_id, output_id): (String, u32, u32) = proxy.method_call("com.cowsociety.virtual_mouse", "CreateNewMouse", ("Test", "/dev/input/by-path/pci-0000:00:15.0-platform-i2c_designware.0-event-mouse")).await.expect("Error");
+    println!("New Mouse: {} {} {}", name, input_id, output_id);
+    let (list,): (Vec<(String, u32, u32)>,) = proxy.method_call("com.cowsociety.virtual_mouse", "ListMice", ()).await.expect("Error");
+    println!("Mice: {:?}", list);
+
+    Ok(())
+}
+
+async fn server() {
+    //create mouse structures
+    let communicator = Arc::new(Mutex::new(Communicator::default()));
+    let mut manager = MouseManager::new(communicator.clone());
+
+    // Setup DBus connection
+    let (resource, conn) = match connection::new_session_sync() {
+        Ok(val) => {val}, 
+        Err(err) => {panic!("Failed to connect to the D-Bus Session: {}", err)}
+    };
+    let _handle = tokio::spawn(async {
+        let err = resource.await;
+        panic!("Lost connection to D-Bus: {}", err);
+    });
+    if let Err(err) = conn.request_name("com.cowsociety.virtual_mouse", false, true, false).await {
+        panic!("Failed to get name: com.cowsociety.virtual-mouse: {}", err);
+    }
+    // Setup Crossroads for managing objects and interfaces
+    let mut cr = Crossroads::new();
+    cr.set_async_support(Some((conn.clone(), Box::new(|x| {tokio::spawn(x);}))));
+
+    
+    // General Server commands
+    let process_interface = cr.register("com.cowsociety.virtual_mouse", |b: &mut IfaceBuilder<Arc<Mutex<Communicator>>>| {
+        b.method_with_cr_async("CreateNewMouse", ("name", "input-path",), ("name", "input-event-id", "output-event-id"), |mut ctx, cr, (name, path,): (String, String,)| {
+            let data = cr.data_mut::<Arc<Mutex<Communicator>>>(&"/".into()).unwrap();
+            let future = CommunicatorResultFuture{name: name.clone(), handle: data.clone()};
+            let mut guard = data.lock().unwrap();
+            guard.queued_mice.insert(name.clone(), path.clone());
+            if let Some(waker) = guard.work_waker.take() {waker.wake();}
+            drop(guard);
+            // Create a new mouse object
+            async move {
+                match future.await{
+                    Ok(data) => {
+                        return ctx.reply(Ok((data.name, data.input_id, data.output_id,)));
+                    },
+                    Err(err) => {
+                        return ctx.reply(Err(MethodErr::failed(&err.to_string())));
+                    }
+                }
+            }
+        });
+        b.method("StopMouse", ("name",), (), |_, data,  (name,): (String,)| {
+            let mut guard = data.lock().unwrap();
+            guard.dequeued_mice.insert(name.to_owned());
+            if let Some(waker) = guard.dequeue_waker.take() {waker.wake();}
+            Ok(())
+        });
+        b.method("ListMice", (), ("mice-list",), |_, data, ()| {
+            let guard = data.lock().unwrap();
+            let mut mice = vec![];
+            for (_, info) in guard.current_mice.iter(){
+                mice.push((info.name.clone(), info.input_id, info.output_id));
+            }
+            // Return list of Mice objects
+            Ok((mice,))
+        });
+        b.method("GetProcessID", (), ("pid",), |_, _, ()| {
+            // Return the server's process id
+            Ok((process::id(),))
+        });
+        b.method("Shutdown", (), (), |_, data, ()| {
+            let mut guard = data.lock().unwrap();
+            guard.shutdown.0 = true;
+            if let Some(waker) = guard.shutdown.1.take() {waker.wake();}
+            Ok(())
+        });
+    });
+    cr.insert("/", &[process_interface], communicator);
+
+    // Add Crossroads to connection
+    conn.start_receive(MatchRule::new_method_call(), Box::new(move |msg, conn| {
+        cr.handle_message(msg, conn).unwrap();
+        true
+    }));
+
+    //update mice endlessly
+    manager.update_loop().await;
 }

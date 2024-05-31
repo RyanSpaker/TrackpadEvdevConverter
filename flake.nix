@@ -9,7 +9,7 @@
       system: 
       let
         pkgs = import nixpkgs {inherit system; config.allowUnfree = true; };
-        rust-toolchain = fenix.packages.${system}.complete;
+        rust-toolchain = fenix.packages.${system}.latest;
       in
       {
         devShells.default = with pkgs; mkShell rec {
@@ -21,7 +21,10 @@
               "rustc"
               "rustfmt"
             ])
+            libinput
             pkg-config
+            systemd
+            dbus
             cargo-udeps
             git
             udev udev.dev alsa-lib lutris
