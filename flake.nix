@@ -49,11 +49,23 @@
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          buildInputs = [
-            pkgs.pkg-config
-          ];
           nativeBuildInputs = [
             pkgs.pkg-config
+          ];
+          buildInputs = with pkgs; [
+            libinput
+            pkg-config
+            systemd
+            dbus
+            cargo-udeps
+            git
+            udev udev.dev alsa-lib lutris
+            vulkan-tools vulkan-headers vulkan-loader vulkan-validation-layers
+            xorg.libX11 xorg.libXcursor xorg.libXi xorg.libXrandr # To use the x11 feature
+            libxkbcommon wayland # To use the wayland feature
+            rustc.llvmPackages.clang
+            rustc.llvmPackages.bintools
+            (wrapBintoolsWith { bintools = mold; })
           ];
         };
       }
