@@ -3,15 +3,14 @@ use communicator::{Communicator, CommunicatorResultFuture};
 use dbus::{channel::MatchingReceiver, message::MatchRule, nonblock, MethodErr};
 use dbus_crossroads::{Crossroads, IfaceBuilder};
 use dbus_tokio::connection;
-use input::{Libinput, LibinputInterface};
+use input::LibinputInterface;
 use libc::{O_RDONLY, O_RDWR, O_WRONLY};
 use manager::MouseManager;
+use tokio::task;
 
 pub mod mouse;
 pub mod manager;
 pub mod communicator;
-
-
 struct Interface;
 impl LibinputInterface for Interface {
     fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
@@ -28,12 +27,68 @@ impl LibinputInterface for Interface {
     }
 }
 
+/// Prints the help message
+pub fn print_help() -> Result<(), Box<dyn std::error::Error>>{
+    println!("Trackpad to Mouse evdev Conversion Utility: ");
+    println!("Usage: trackpad-evdev-converter [function] [parameter]");
+    println!("\"\", \"--server\" : Starts a process to handle all mice conversions");
+    println!("\"-n\", \"--new\" : Tells the server to create a new mouse with parameters: name path_to_evdev_event");
+    println!("\"-l\", \"--list\" : Queries the server and prints all currently active mice, (name input_event_id output_event_id)");
+    println!("\"-s\", \"--stop\" : Tells the server to stop a mouse with parameter: name");
+    println!("\"--shutdown\" : Tells the server to stop all mice and exit");
+    println!("\"--server-pid\" : print the server pid");
+    println!("The program may require sudo privaliges in order to work.");
+    return Ok(());
+}
+
+/// The command was malformed
+pub fn malformed() -> Result<(), Box<dyn std::error::Error>>{
+    println!("Malformed Usage.");
+    return print_help();
+}
+
+/// Enum representing the different functions of the client side app
+pub enum AppFunction{
+    New(String, String),
+    List,
+    Stop(String),
+    Shutdown,
+    PID
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = args().skip(1).collect::<Vec<String>>();
     if arguments.len() == 0 || arguments[0] == "--server" {
         server().await;
+        return Ok(());
     }
+
+    let function: AppFunction = match arguments[0].as_str() {
+        "-n" | "--new" => {
+            if arguments.len() != 3 {return malformed();}
+            AppFunction::New(arguments[1].clone(), arguments[2].clone())
+        }
+        "-l" | "--list" => {
+            if arguments.len() != 1 {return malformed();}
+            AppFunction::List
+        }
+        "-s" | "--stop" => {
+            if arguments.len() != 2 {return malformed();}
+            AppFunction::Stop(arguments[1].clone())
+        }
+        "--shutdown" => {
+            if arguments.len() != 1 {return malformed();}
+            AppFunction::Shutdown
+        }
+        "--server-pid" => {
+            if arguments.len() != 1 {return malformed();}
+            AppFunction::PID
+        }
+        "--help" => {return print_help();}
+        _ => {return malformed();}
+    };
+
     //client
     
     // Setup DBus connection
@@ -41,21 +96,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(val) => {val}, 
         Err(err) => {panic!("Failed to connect to the D-Bus Session: {}", err)}
     };
-    let _handle = tokio::spawn(async {
+    let dbus_handle = tokio::spawn(async {
         let err = resource.await;
         panic!("Lost connection to D-Bus: {}", err);
     });
 
-    let mut data_source = Libinput::new_from_path(Interface);
-    let device = data_source.path_add_device("/dev/input/by-path/pci-0000:00:15.0-platform-i2c_designware.0-event-mouse");
-    println!("device: {:?}", device);
-
     let proxy = nonblock::Proxy::new("com.cowsociety.virtual_mouse", "/", std::time::Duration::from_secs(2), conn.clone());
-    let (name, input_id, output_id): (String, u32, u32) = proxy.method_call("com.cowsociety.virtual_mouse", "CreateNewMouse", ("Test", "/dev/input/by-path/pci-0000:00:15.0-platform-i2c_designware.0-event-mouse")).await.expect("Error");
-    println!("New Mouse: {} {} {}", name, input_id, output_id);
-    let (list,): (Vec<(String, u32, u32)>,) = proxy.method_call("com.cowsociety.virtual_mouse", "ListMice", ()).await.expect("Error");
-    println!("Mice: {:?}", list);
-
+    if let Err(_) = proxy.method_call::<(Vec<(String, u32, u32)>,), (), &str, &str>(
+        "com.cowsociety.virtual_mouse", 
+        "ListMice", 
+        ()
+    ).await {
+        println!("Could not find or connect to server. (make sure to start it with --server)");
+        return Ok(());
+    }
+    match function {
+        AppFunction::New(name, path) => {
+            let (name, input_id, output_id): (String, u32, u32) = proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "CreateNewMouse", 
+                (name.as_str(), path.as_str())
+            ).await?;
+            println!("Success: (name input_id output_id)");
+            println!("{} {} {}", name, input_id, output_id);
+        }
+        AppFunction::List => {
+            let (list,): (Vec<(String, u32, u32)>,) = proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "ListMice", 
+                ()).await?;
+            println!("Mice: (name input_id output_id)");
+            for (name, input_id, output_id) in list.into_iter() {
+                println!("{} {} {}", name, input_id, output_id);
+            }
+        }
+        AppFunction::Stop(name) => {
+            proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "StopMouse", 
+                (name, )).await?;
+        }
+        AppFunction::Shutdown => {
+            proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "Shutdown", 
+                ()).await?;
+        }
+        AppFunction::PID => {
+            let (pid,): (u32,) = proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "GetProcessID", 
+                ()).await?;
+            println!("Server Process ID:");
+            println!("{}", pid);
+        }
+    }
+    dbus_handle.abort();
     Ok(())
 }
 
@@ -69,9 +165,8 @@ async fn server() {
         Ok(val) => {val}, 
         Err(err) => {panic!("Failed to connect to the D-Bus Session: {}", err)}
     };
-    let _handle = tokio::spawn(async {
-        let err = resource.await;
-        panic!("Lost connection to D-Bus: {}", err);
+    let dbus_handle = tokio::spawn(async {
+        resource.await;
     });
     if let Err(err) = conn.request_name("com.cowsociety.virtual_mouse", false, true, false).await {
         panic!("Failed to get name: com.cowsociety.virtual-mouse: {}", err);
@@ -128,7 +223,7 @@ async fn server() {
             Ok(())
         });
     });
-    cr.insert("/", &[process_interface], communicator);
+    cr.insert("/", &[process_interface], communicator.clone());
 
     // Add Crossroads to connection
     conn.start_receive(MatchRule::new_method_call(), Box::new(move |msg, conn| {
@@ -137,5 +232,11 @@ async fn server() {
     }));
 
     //update mice endlessly
-    manager.update_loop().await;
+    let local = task::LocalSet::new();
+    local.run_until(async move {
+        manager.update_loop().await;
+    }).await;
+
+    // Disconnect DBus
+    dbus_handle.abort();
 }

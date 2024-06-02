@@ -111,18 +111,24 @@ impl MouseDriver{
         }
         let mut output = create_virtual_device(name.clone()).map_err(|err| MouseCreationError::FailedToCreateVirtualDevice(err))?;
         // Get the output event id
-        fn get_output_id(device: &mut VirtualDevice) -> Result<u32, MouseCreationError>{
-            let syspath = device.get_syspath().map_err(|err| MouseCreationError::FailedToGetOutputSyspath(err))?;
-            match syspath.clone().file_name().and_then(|val| val.to_os_string().into_string().ok()) {
-                Some(name) => {
-                    return name.strip_prefix("event")
-                        .ok_or(MouseCreationError::FailedToGetOutputIDFromSyspath(syspath.clone()))
-                        .and_then(|val| val.parse::<u32>().map_err(|_| MouseCreationError::FailedToGetOutputIDFromSyspath(syspath)));
-                },
-                _ => {return Err(MouseCreationError::FailedToGetOutputIDFromSyspath(syspath))}
-            }
+        let syspath = output.get_syspath().map_err(|err| MouseCreationError::FailedToGetOutputSyspath(err))?;
+        fn get_output_id(syspath: PathBuf) -> std::io::Result<u32>{
+            let id_string = syspath.clone().read_dir()?.filter_map(|entry| {
+                match entry {
+                    Ok(dir) => {
+                        match dir.file_name().into_string() {
+                            Ok(name) => {
+                                name.strip_prefix("event").map(|id| id.to_string())
+                            },
+                            Err(_) => {None}
+                        }
+                    },
+                    Err(_) => {None}
+                }
+            }).next().ok_or(std::io::Error::from_raw_os_error(0))?;
+            id_string.parse::<u32>().map_err(|_| std::io::Error::from_raw_os_error(0))
         }
-        let output_id = get_output_id(&mut output)?;
+        let output_id = get_output_id(syspath.clone()).map_err(|_| MouseCreationError::FailedToGetOutputIDFromSyspath(syspath))?;
 
         let metadata = MouseInfo{name, input_id, output_id};
 

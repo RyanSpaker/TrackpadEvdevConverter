@@ -56,41 +56,42 @@ impl MouseManager{
         let mut com = self.communicator.lock().unwrap();
         let queued: Vec<(String, String)> = com.queued_mice.drain().collect();
         for (name, path) in queued {
-            if let Some(waker) = com.result_wakers.remove(&name) {waker.wake();}
             if self.mice.contains_key(&name) {
                 com.errors.insert(name.to_owned(), MouseCreationError::NameInUse);
-                continue;
+            }else{
+                match MouseDriver::new(name.clone(), path){
+                    Ok(mouse) => {
+                        let info = mouse.metadata.clone();
+                        mouse.lock();
+                        let handle = Arc::new(tokio::sync::Mutex::new(mouse));
+                        let abort = Arc::new(Mutex::new(AbortData{abort: false, err: None}));
+                        let future_handle = handle.clone();
+                        let future_abort = abort.clone();
+                        let future_uni_abort = self.abort.clone();
+                        let future_uni_abort_waker = self.abort_waker.clone();
+                        let task = tokio::task::spawn_local(async move {
+                            let mut mouse = future_handle.lock().await;
+                            let err = mouse.update_loop().await;
+                            drop(mouse);
+                            let mut abort = future_abort.lock().unwrap();
+                            abort.abort = true;
+                            abort.err = Some(err);
+                            let mut abort = future_uni_abort.lock().unwrap();
+                            *abort = true;
+                            let mut abort_waker = future_uni_abort_waker.lock().unwrap();
+                            if let Some(waker) = abort_waker.take(){
+                                waker.wake();
+                            }
+                        });
+                        self.mice.insert(name.clone(), ManagedMouse{metadata: info.clone(), driver: handle, task: Some(task), abort});
+                        com.current_mice.insert(name.clone(), info);
+                    },
+                    Err(err) => {
+                        com.errors.insert(name.clone(), err);
+                    }
+                };
             }
-            match MouseDriver::new(name.clone(), path){
-                Ok(mouse) => {
-                    let info = mouse.metadata.clone();
-                    mouse.lock();
-                    let handle = Arc::new(tokio::sync::Mutex::new(mouse));
-                    let abort = Arc::new(Mutex::new(AbortData{abort: false, err: None}));
-                    let future_handle = handle.clone();
-                    let future_abort = abort.clone();
-                    let future_uni_abort = self.abort.clone();
-                    let future_uni_abort_waker = self.abort_waker.clone();
-                    let task = tokio::task::spawn_local(async move {
-                        let mut mouse = future_handle.lock().await;
-                        let err = mouse.update_loop().await;
-                        drop(mouse);
-                        let mut abort = future_abort.lock().unwrap();
-                        abort.abort = true;
-                        abort.err = Some(err);
-                        let mut abort = future_uni_abort.lock().unwrap();
-                        *abort = true;
-                        let mut abort_waker = future_uni_abort_waker.lock().unwrap();
-                        if let Some(waker) = abort_waker.take(){
-                            waker.wake();
-                        }
-                    });
-                    self.mice.insert(name, ManagedMouse{metadata: info, driver: handle, task: Some(task), abort});
-                },
-                Err(err) => {
-                    com.errors.insert(name, err);
-                }
-            };
+            if let Some(waker) = com.result_wakers.remove(&name) {waker.wake();}
         }
     }
     /// Aborts all mice that need to be
@@ -106,13 +107,15 @@ impl MouseManager{
             }
             let driver = mouse.driver.blocking_lock();
             driver.unlock();
-            println!("Mouse {} Aborted with error: {:?}", *name, error);
+            if let Some(err) = error{
+                println!("Mouse {} Aborted with error: {:?}", *name, err);
+            }
             aborted_mice.push(name.to_owned());
         }
         aborted_mice.into_iter().for_each(|name| {self.mice.remove(&name);});
     }
     /// Aborts all mice
-    pub fn shutdown(&mut self) {
+    pub async fn shutdown(&mut self) {
         for (name, mouse) in self.mice.iter_mut(){
             let mut abort = mouse.abort.lock().unwrap();
             let error = abort.err.take();
@@ -120,14 +123,16 @@ impl MouseManager{
             if let Some(task) = mouse.task.take(){
                 task.abort();
             }
-            let driver = mouse.driver.blocking_lock();
+            let driver = mouse.driver.lock().await;
             driver.unlock();
-            println!("Mouse {} Aborted with error: {:?}", *name, error);
+            if let Some(err) = error{
+                println!("Mouse {} Aborted with error: {:?}", *name, err);
+            }
         }
         self.mice.clear();
     }
     /// Removes any dequeued mice from the system
-    pub fn stop_mice(&mut self) {
+    pub async fn stop_mice(&mut self) {
         let mut com = self.communicator.lock().unwrap();
         let queued: Vec<String> = com.dequeued_mice.drain().collect();
         for name in queued {
@@ -136,7 +141,7 @@ impl MouseManager{
             if let Some(task) = managed_mouse.task.take(){
                 task.abort();
             }
-            let driver = managed_mouse.driver.blocking_lock();
+            let driver = managed_mouse.driver.lock().await;
             driver.unlock();
         }
     }
@@ -155,11 +160,15 @@ impl MouseManager{
                     self.abort_mice();
                 }
                 _ = shutdown_future => {
-                    self.shutdown();
+                    self.shutdown().await;
                     break;
                 }
                 _ = dequeue_future => {
-                    self.stop_mice();
+                    self.stop_mice().await;
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    self.shutdown().await;
+                    break;
                 }
             }
         }
