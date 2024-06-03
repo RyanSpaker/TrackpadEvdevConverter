@@ -112,22 +112,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     match function {
         AppFunction::New(name, path) => {
-            let (name, input_id, output_id): (String, u32, u32) = proxy.method_call(
+            let (name, input_id, output_id, libinput_id): (String, u32, u32, u32) = proxy.method_call(
                 "com.cowsociety.virtual_mouse", 
                 "CreateNewMouse", 
                 (name.as_str(), path.as_str())
             ).await?;
-            println!("Success: (name input_id output_id)");
-            println!("{} {} {}", name, input_id, output_id);
+            println!("Success: (name input_id output_id, libinput_id)");
+            println!("{} {} {} {}", name, input_id, output_id, libinput_id);
         }
         AppFunction::List => {
-            let (list,): (Vec<(String, u32, u32)>,) = proxy.method_call(
+            let (list,): (Vec<(String, u32, u32, u32)>,) = proxy.method_call(
                 "com.cowsociety.virtual_mouse", 
                 "ListMice", 
                 ()).await?;
-            println!("Mice: (name input_id output_id)");
-            for (name, input_id, output_id) in list.into_iter() {
-                println!("{} {} {}", name, input_id, output_id);
+            println!("Mice: (name input_id output_id libinput_id)");
+            for (name, input_id, output_id, libinput_id) in list.into_iter() {
+                println!("{} {} {} {}", name, input_id, output_id, libinput_id);
             }
         }
         AppFunction::Stop(name) => {
@@ -178,7 +178,7 @@ async fn server() {
     
     // General Server commands
     let process_interface = cr.register("com.cowsociety.virtual_mouse", |b: &mut IfaceBuilder<Arc<Mutex<Communicator>>>| {
-        b.method_with_cr_async("CreateNewMouse", ("name", "input-path",), ("name", "input-event-id", "output-event-id"), |mut ctx, cr, (name, path,): (String, String,)| {
+        b.method_with_cr_async("CreateNewMouse", ("name", "input-path",), ("name", "input-event-id", "output-event-id", "libinput-id"), |mut ctx, cr, (name, path,): (String, String,)| {
             let data = cr.data_mut::<Arc<Mutex<Communicator>>>(&"/".into()).unwrap();
             let future = CommunicatorResultFuture{name: name.clone(), handle: data.clone()};
             let mut guard = data.lock().unwrap();
@@ -189,7 +189,7 @@ async fn server() {
             async move {
                 match future.await{
                     Ok(data) => {
-                        return ctx.reply(Ok((data.name, data.input_id, data.output_id,)));
+                        return ctx.reply(Ok((data.name, data.input_id, data.output_id, data.libinput_id)));
                     },
                     Err(err) => {
                         return ctx.reply(Err(MethodErr::failed(&err.to_string())));
@@ -207,7 +207,7 @@ async fn server() {
             let guard = data.lock().unwrap();
             let mut mice = vec![];
             for (_, info) in guard.current_mice.iter(){
-                mice.push((info.name.clone(), info.input_id, info.output_id));
+                mice.push((info.name.clone(), info.input_id, info.output_id, info.libinput_id));
             }
             // Return list of Mice objects
             Ok((mice,))
