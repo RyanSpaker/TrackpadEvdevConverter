@@ -147,6 +147,7 @@ impl MouseManager{
     }
     /// asynchronous update loop for the mouse manager
     pub async fn update_loop(&mut self) {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
         loop{
             let queued_future = CommunicatorWorkFuture{com: self.communicator.clone()};
             let abort_future = ManagerAbortFuture{abort: self.abort.clone(), waker: self.abort_waker.clone()};      
@@ -167,6 +168,10 @@ impl MouseManager{
                     self.stop_mice().await;
                 }
                 _ = tokio::signal::ctrl_c() => {
+                    self.shutdown().await;
+                    break;
+                }
+                _ = sigterm.recv() => {
                     self.shutdown().await;
                     break;
                 }

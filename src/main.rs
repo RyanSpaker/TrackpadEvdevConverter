@@ -1,4 +1,4 @@
-use std::{env::args, fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::Path, process, sync::{Arc, Mutex}};
+use std::{env::args, error::Error, fmt::Display, fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::Path, process, sync::{Arc, Mutex}};
 use communicator::{Communicator, CommunicatorResultFuture};
 use dbus::{channel::MatchingReceiver, message::MatchRule, nonblock, MethodErr};
 use dbus_crossroads::{Crossroads, IfaceBuilder};
@@ -11,6 +11,7 @@ use tokio::task;
 pub mod mouse;
 pub mod manager;
 pub mod communicator;
+
 struct Interface;
 impl LibinputInterface for Interface {
     fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
@@ -43,8 +44,8 @@ pub fn print_help() -> Result<(), Box<dyn std::error::Error>>{
 
 /// The command was malformed
 pub fn malformed() -> Result<(), Box<dyn std::error::Error>>{
-    println!("Malformed Usage.");
-    return print_help();
+    println!("Malformed Usage."); print_help()?;
+    return Err(Box::new(AppError::ServerNotRunning))
 }
 
 /// Enum representing the different functions of the client side app
@@ -56,12 +57,30 @@ pub enum AppFunction{
     PID
 }
 
+#[derive(Debug, Clone)]
+pub enum AppError{
+    MalformedCommand,
+    ServerNotRunning,
+    ServerAlreadyRunning
+}
+impl Display for AppError{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AppError::MalformedCommand => "Command was Malformed",
+            AppError::ServerNotRunning => "Server is not currently running",
+            AppError::ServerAlreadyRunning => "Server is already running elsewhere"
+        })?;
+        Ok(())
+    }
+}
+impl Error for AppError{}
+
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = args().skip(1).collect::<Vec<String>>();
     if arguments.len() == 0 || arguments[0] == "--server" {
-        server().await;
-        return Ok(());
+        return server().await;
     }
 
     let function: AppFunction = match arguments[0].as_str() {
@@ -90,87 +109,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     //client
-    
-    // Setup DBus connection
-    let (resource, conn) = match connection::new_session_sync() {
-        Ok(val) => {val}, 
-        Err(err) => {panic!("Failed to connect to the D-Bus Session: {}", err)}
-    };
-    let dbus_handle = tokio::spawn(async {
-        let err = resource.await;
-        panic!("Lost connection to D-Bus: {}", err);
-    });
-
-    let proxy = nonblock::Proxy::new("com.cowsociety.virtual_mouse", "/", std::time::Duration::from_secs(2), conn.clone());
-    if let Err(_) = proxy.method_call::<(Vec<(String, u32, u32)>,), (), &str, &str>(
-        "com.cowsociety.virtual_mouse", 
-        "ListMice", 
-        ()
-    ).await {
-        println!("Could not find or connect to server. (make sure to start it with --server)");
-        return Ok(());
-    }
-    match function {
-        AppFunction::New(name, path) => {
-            let (name, input_id, output_id, libinput_id): (String, u32, u32, u32) = proxy.method_call(
-                "com.cowsociety.virtual_mouse", 
-                "CreateNewMouse", 
-                (name.as_str(), path.as_str())
-            ).await?;
-            println!("Success: (name input_id output_id, libinput_id)");
-            println!("{} {} {} {}", name, input_id, output_id, libinput_id);
-        }
-        AppFunction::List => {
-            let (list,): (Vec<(String, u32, u32, u32)>,) = proxy.method_call(
-                "com.cowsociety.virtual_mouse", 
-                "ListMice", 
-                ()).await?;
-            println!("Mice: (name input_id output_id libinput_id)");
-            for (name, input_id, output_id, libinput_id) in list.into_iter() {
-                println!("{} {} {} {}", name, input_id, output_id, libinput_id);
-            }
-        }
-        AppFunction::Stop(name) => {
-            proxy.method_call(
-                "com.cowsociety.virtual_mouse", 
-                "StopMouse", 
-                (name, )).await?;
-        }
-        AppFunction::Shutdown => {
-            proxy.method_call(
-                "com.cowsociety.virtual_mouse", 
-                "Shutdown", 
-                ()).await?;
-        }
-        AppFunction::PID => {
-            let (pid,): (u32,) = proxy.method_call(
-                "com.cowsociety.virtual_mouse", 
-                "GetProcessID", 
-                ()).await?;
-            println!("Server Process ID:");
-            println!("{}", pid);
-        }
-    }
-    dbus_handle.abort();
-    Ok(())
+    return client(function).await;
 }
 
-async fn server() {
+/// Test to see if the server is running
+async fn test_server_running(conn: Arc<nonblock::SyncConnection>) -> bool {
+    let proxy = nonblock::Proxy::new("com.cowsociety.virtual_mouse", "/", std::time::Duration::from_secs(2), conn);
+    proxy.method_call::<(u32,), (), &str, &str>("com.cowsociety.virtual_mouse", "GetProcessID", ()).await.map_or(false, |_| true)
+}
+
+/// Server code
+async fn server() -> Result<(), Box<dyn std::error::Error>> {
     //create mouse structures
     let communicator = Arc::new(Mutex::new(Communicator::default()));
     let mut manager = MouseManager::new(communicator.clone());
 
     // Setup DBus connection
-    let (resource, conn) = match connection::new_session_sync() {
-        Ok(val) => {val}, 
-        Err(err) => {panic!("Failed to connect to the D-Bus Session: {}", err)}
-    };
+    let (resource, conn) = connection::new_session_sync().map_err(|dbus_error| Box::new(dbus_error))?;
     let dbus_handle = tokio::spawn(async {
-        resource.await;
+        resource.await
     });
-    if let Err(err) = conn.request_name("com.cowsociety.virtual_mouse", false, true, false).await {
-        panic!("Failed to get name: com.cowsociety.virtual-mouse: {}", err);
+
+    // See if we already have a server running
+    if test_server_running(conn.clone()).await {
+        return Err(Box::new(AppError::ServerAlreadyRunning));
     }
+
+    // Finish Dbus setup
+    conn.request_name("com.cowsociety.virtual_mouse", false, true, false).await?;
+
     // Setup Crossroads for managing objects and interfaces
     let mut cr = Crossroads::new();
     cr.set_async_support(Some((conn.clone(), Box::new(|x| {tokio::spawn(x);}))));
@@ -239,4 +206,64 @@ async fn server() {
 
     // Disconnect DBus
     dbus_handle.abort();
+
+    Ok(())
+}
+
+/// Client code
+async fn client(function: AppFunction) -> Result<(), Box<dyn std::error::Error>> {
+    // Setup DBus connection
+    let (resource, conn) = connection::new_session_sync().map_err(|dbus_error| Box::new(dbus_error))?;
+    let dbus_handle = tokio::spawn(async {
+        resource.await
+    });
+    //Setup proxy
+    let proxy = nonblock::Proxy::new("com.cowsociety.virtual_mouse", "/", std::time::Duration::from_secs(2), conn.clone());
+    // make sure server is running
+    if !proxy.method_call::<(u32,), (), &str, &str>("com.cowsociety.virtual_mouse", "GetProcessID", ()).await.map_or(false, |_| true) {
+        return Err(Box::new(AppError::ServerNotRunning));
+    }
+    match function {
+        AppFunction::New(name, path) => {
+            let (name, input_id, output_id, libinput_id): (String, u32, u32, u32) = proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "CreateNewMouse", 
+                (name.as_str(), path.as_str())
+            ).await?;
+            println!("Success: (name input_id output_id, libinput_id)");
+            println!("{} {} {} {}", name, input_id, output_id, libinput_id);
+        }
+        AppFunction::List => {
+            let (list,): (Vec<(String, u32, u32, u32)>,) = proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "ListMice", 
+                ()).await?;
+            println!("Mice: (name input_id output_id libinput_id)");
+            for (name, input_id, output_id, libinput_id) in list.into_iter() {
+                println!("{} {} {} {}", name, input_id, output_id, libinput_id);
+            }
+        }
+        AppFunction::Stop(name) => {
+            proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "StopMouse", 
+                (name, )).await?;
+        }
+        AppFunction::Shutdown => {
+            proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "Shutdown", 
+                ()).await?;
+        }
+        AppFunction::PID => {
+            let (pid,): (u32,) = proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "GetProcessID", 
+                ()).await?;
+            println!("Server Process ID:");
+            println!("{}", pid);
+        }
+    }
+    dbus_handle.abort();
+    Ok(())
 }
