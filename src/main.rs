@@ -37,6 +37,7 @@ pub fn print_help() -> Result<(), Box<dyn std::error::Error>>{
     println!("\"-l\", \"--list\" : Queries the server and prints all currently active mice, (name input_event_id output_event_id)");
     println!("\"-s\", \"--stop\" : Tells the server to stop a mouse with parameter: name");
     println!("\"--shutdown\" : Tells the server to stop all mice and exit");
+    println!("\"--reset\" : Tells the server to stop all mice and not exit");
     println!("\"--server-pid\" : print the server pid");
     println!("The program may require sudo privaliges in order to work.");
     return Ok(());
@@ -54,6 +55,7 @@ pub enum AppFunction{
     List,
     Stop(String),
     Shutdown,
+    Reset,
     PID
 }
 
@@ -99,6 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "--shutdown" => {
             if arguments.len() != 1 {return malformed();}
             AppFunction::Shutdown
+        }
+        "--reset" => {
+            if arguments.len() != 1 {return malformed();}
+            AppFunction::Reset
         }
         "--server-pid" => {
             if arguments.len() != 1 {return malformed();}
@@ -189,6 +195,13 @@ async fn server() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(waker) = guard.shutdown.1.take() {waker.wake();}
             Ok(())
         });
+        b.method("Reset", (), (), |_, data, ()| {
+            let mut guard = data.lock().unwrap();
+            let names: Vec<String> = guard.current_mice.keys().cloned().collect();
+            guard.dequeued_mice.extend(names);
+            if let Some(waker) = guard.dequeue_waker.take() {waker.wake();}
+            Ok(())
+        });
     });
     cr.insert("/", &[process_interface], communicator.clone());
 
@@ -253,6 +266,12 @@ async fn client(function: AppFunction) -> Result<(), Box<dyn std::error::Error>>
             proxy.method_call(
                 "com.cowsociety.virtual_mouse", 
                 "Shutdown", 
+                ()).await?;
+        }
+        AppFunction::Reset => {
+            proxy.method_call(
+                "com.cowsociety.virtual_mouse", 
+                "Reset", 
                 ()).await?;
         }
         AppFunction::PID => {

@@ -151,7 +151,7 @@ impl MouseManager{
         loop{
             let queued_future = CommunicatorWorkFuture{com: self.communicator.clone()};
             let abort_future = ManagerAbortFuture{abort: self.abort.clone(), waker: self.abort_waker.clone()};      
-            let shutdown_future = CommunicatorShutdownFuture{com: self.communicator.clone()};  
+            let shutdown_future = CommunicatorShutdownFuture{com: self.communicator.clone()};
             let dequeue_future = CommunicatorDequeueFuture{com: self.communicator.clone()};
             tokio::select! {
                 _ = queued_future => {
