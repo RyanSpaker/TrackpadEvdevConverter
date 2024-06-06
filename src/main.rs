@@ -131,7 +131,7 @@ async fn server() -> Result<(), Box<dyn std::error::Error>> {
     let mut manager = MouseManager::new(communicator.clone());
 
     // Setup DBus connection
-    let (resource, conn) = connection::new_session_sync().map_err(|dbus_error| Box::new(dbus_error))?;
+    let (resource, conn) = connection::new_system_sync().map_err(|dbus_error| Box::new(dbus_error))?;
     let dbus_handle = tokio::spawn(async {
         resource.await
     });
@@ -226,7 +226,7 @@ async fn server() -> Result<(), Box<dyn std::error::Error>> {
 /// Client code
 async fn client(function: AppFunction) -> Result<(), Box<dyn std::error::Error>> {
     // Setup DBus connection
-    let (resource, conn) = connection::new_session_sync().map_err(|dbus_error| Box::new(dbus_error))?;
+    let (resource, conn) = connection::new_system_sync().map_err(|dbus_error| Box::new(dbus_error))?;
     let dbus_handle = tokio::spawn(async {
         resource.await
     });
