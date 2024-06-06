@@ -10,7 +10,7 @@ The program takes in a file location for an evdev event file corresponding to a 
 It then creates a libinput context using this device to automatically generate relative mouse events. It then converts these mouse events into the corresponding evdev events, and creates a new evdev device to output these events to. It also uses the xinput command line tool to find out which libinput device is recieving input from the evdev file specified, and disables the device, to prevent the mouse from being duplicated.
 
 ### Usage
-The service first needs to be started using the --server flag. I personally setup a systemd service to manage the server.
+The service first needs to be started using the --server flag. It requires access to the system bus, so dbus configuration is probably needed. I added a service conf file structure to the flake output, so that you can just add the package to services.dbus.packages to have it setup the correct permission. I personally create a systemd service to 
 
 Next, add devices using --new or -n, specifying a name and file path.
 

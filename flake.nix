@@ -68,7 +68,7 @@
             (wrapBintoolsWith { bintools = mold; })
           ];
           postInstall = ''
-            cp ${src}/dbus.conf ${out}/etc/dbus-1/system.d/com.cowsociety.virtual_mouse.conf
+            cp ${src}/dbus.conf $out/etc/dbus-1/system.d/com.cowsociety.virtual_mouse.conf
           '';
         };
       }
