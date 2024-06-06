@@ -44,7 +44,7 @@
         packages.default = (pkgs.makeRustPlatform {
           cargo = rust-toolchain.toolchain;
           rustc = rust-toolchain.toolchain;
-        }).buildRustPackage {
+        }).buildRustPackage rec {
           pname = "trackpad-evdev-converter";
           version = "0.1.0";
           src = ./.;
@@ -67,6 +67,9 @@
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
           ];
+          postInstall = ''
+            cp ${src}/dbus.conf ${out}/etc/dbus-1/system.d/com.cowsociety.virtual_mouse.conf
+          '';
         };
       }
     );

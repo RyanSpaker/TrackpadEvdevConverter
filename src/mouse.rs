@@ -1,6 +1,24 @@
-use std::path::PathBuf;
+use std::{fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::{Path, PathBuf}};
 use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, AttributeSet, Device, EventStream, EventType, InputEvent, InputEventKind, Key, RelativeAxisType, Synchronization};
-use input::{event::{pointer::{ButtonState, PointerScrollEvent}, PointerEvent}, Event, Libinput};
+use input::{event::{pointer::{ButtonState, PointerScrollEvent}, PointerEvent}, Event, Libinput, LibinputInterface};
+use libc::{O_RDONLY, O_RDWR, O_WRONLY};
+
+/// Interface used by Libinput.
+struct Interface;
+impl LibinputInterface for Interface {
+    fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
+        OpenOptions::new()
+            .custom_flags(flags)
+            .read((flags & O_RDONLY != 0) | (flags & O_RDWR != 0))
+            .write((flags & O_WRONLY != 0) | (flags & O_RDWR != 0))
+            .open(path)
+            .map(|file| file.into())
+            .map_err(|err| err.raw_os_error().unwrap())
+    }
+    fn close_restricted(&mut self, fd: OwnedFd) {
+        drop(File::from(fd));
+    }
+}
 
 /// Struct containing a virtual mouse's metadata.  
 #[derive(Debug, Clone)]
@@ -83,7 +101,7 @@ impl MouseDriver{
     /// Create a new mouse driver
     pub fn new(name: String, input_path: String) -> Result<Self, MouseCreationError>{
         // Get Libinput setup
-        let mut data_source = Libinput::new_from_path(super::Interface);
+        let mut data_source = Libinput::new_from_path(Interface);
         let device = data_source.path_add_device(&input_path).ok_or(MouseCreationError::FailedToAddPathAsLibinputDevice)?;
         // Get the input event id
         fn sysname_to_id(sysname: String) -> Result<u32, MouseCreationError> {
