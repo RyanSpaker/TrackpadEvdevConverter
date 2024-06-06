@@ -31,7 +31,7 @@ pub async fn server() -> Result<(), Box<dyn Error>> {
     let mut manager = MouseManager::new(communicator.clone());
 
     // Setup DBus connection
-    let (resource, conn) = connection::new_system_sync()
+    let (resource, conn) = connection::new_session_sync()
         .map_err(|err| ServerError::DBusConnectionFailed(err))?;
     let dbus_handle = tokio::spawn(async {
         resource.await

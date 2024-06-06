@@ -44,9 +44,7 @@ impl Display for AppError{
 }
 impl Error for AppError{}
 
-/// Main function. Run server, or client commands
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn app_logic() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = args().skip(1).collect::<Vec<String>>();
 
     //server
@@ -85,4 +83,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     //client
     return client::client(function).await;
+}
+
+/// Main function. Run server, or client commands
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    test_logic()
 }

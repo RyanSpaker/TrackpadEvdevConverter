@@ -67,10 +67,6 @@
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
           ];
-          postInstall = ''
-            mkdir -p $out/etc/dbus-1/system.d
-            cp ${src}/dbus.conf $out/etc/dbus-1/system.d/com.cowsociety.virtual_mouse.conf
-          '';
         };
       }
     );

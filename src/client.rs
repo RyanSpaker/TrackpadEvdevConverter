@@ -37,7 +37,7 @@ impl Error for ClientError{}
 /// Client code
 pub async fn client(function: ClientCommand) -> Result<(), Box<dyn std::error::Error>> {
     // Setup DBus connection
-    let (resource, conn) = connection::new_system_sync()
+    let (resource, conn) = connection::new_session_sync()
         .map_err(|err| ClientError::DBusConnectionFailed(err))?;
     let dbus_handle = tokio::spawn(async {
         resource.await
