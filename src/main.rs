@@ -88,5 +88,5 @@ pub async fn app_logic() -> Result<(), Box<dyn std::error::Error>> {
 /// Main function. Run server, or client commands
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    test_logic()
+    app_logic()
 }
