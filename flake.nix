@@ -46,7 +46,7 @@
           rustc = rust-toolchain.toolchain;
         }).buildRustPackage rec {
           pname = "trackpad-evdev-converter";
-          version = "0.1.0";
+          version = "0.9.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [
@@ -67,6 +67,10 @@
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
           ];
+          postInstall = ''
+            mkdir -p $out/share/system.d
+            cp ${src}/dbus.conf $out/share/system.d/com.cowsociety.virtual_mouse.conf
+          '';
         };
       }
     );

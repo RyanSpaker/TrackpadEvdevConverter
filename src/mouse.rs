@@ -4,7 +4,7 @@ use input::{event::{pointer::{ButtonState, PointerScrollEvent}, PointerEvent}, E
 use libc::{O_RDONLY, O_RDWR, O_WRONLY};
 
 /// Interface used by Libinput.
-struct Interface;
+pub struct Interface;
 impl LibinputInterface for Interface {
     fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
         OpenOptions::new()
@@ -28,9 +28,7 @@ pub struct MouseInfo{
     /// evdev event number for the input device
     pub input_id: u32,
     /// evdev event number for the output device
-    pub output_id: u32,
-    // The id of the libinput device corresponding to the trackpad evdev device
-    pub libinput_id: u32
+    pub output_id: u32
 }
 
 /// Errors from the virtual mouse creation process
@@ -110,23 +108,6 @@ impl MouseDriver{
                 .and_then(|val| val.parse::<u32>().or_else(|_| Err(MouseCreationError::FailedToGetInputID(sysname.clone()))))
         }
         let input_id = sysname_to_id(device.sysname().to_string())?;
-        
-        let libinput_id = std::process::Command::new("xinput").args(["list", "--id-only"]).output().ok().map(|output| {
-            String::from_utf8(output.stdout).ok()
-        }).flatten().map(|ids| {
-            ids.split("\n").filter(|id| {
-                std::process::Command::new("xinput").args(["list-props", id]).output().ok().map(|output| {
-                    String::from_utf8(output.stdout).ok()
-                }).flatten().is_some_and(|props| {
-                    if props.contains(("event".to_owned() + &input_id.to_string()).as_str()) {
-                        true
-                    }else{
-                        false
-                    }
-                })
-            }).next().map(|id| id.parse::<u32>().ok())
-        }).flatten().flatten().ok_or(MouseCreationError::FailedToGetLibinputID)?;
-        
         // Get evdev test source setup
         let test_source = Device::open(input_path.clone())
             .map_err(|err| {MouseCreationError::FailedToOpenEvdevDevice(err)})?
@@ -170,7 +151,7 @@ impl MouseDriver{
         }
         let output_id = get_output_id(syspath.clone()).map_err(|_| MouseCreationError::FailedToGetOutputIDFromSyspath(syspath))?;
 
-        let metadata = MouseInfo{name, input_id, output_id, libinput_id};
+        let metadata = MouseInfo{name, input_id, output_id};
 
         Ok(Self{
             metadata,
@@ -207,16 +188,7 @@ impl MouseDriver{
                 if let Err(err) = self.output.emit(&events) {return MouseDriverUpdateError::EmitEventsError(err);}
             }
         }
-    }
-
-    /// Locks the trackpad input device, preventing it from interacting with the computer
-    pub fn lock(&self) {
-        std::process::Command::new("xinput").args(["--disable".to_string(), self.metadata.libinput_id.to_string()]).spawn().unwrap().wait().unwrap();
-    }
-    /// Unlocks the trackpad input device
-    pub fn unlock(&self) {
-        std::process::Command::new("xinput").args(["--enable".to_string(), self.metadata.libinput_id.to_string()]).spawn().unwrap().wait().unwrap();
-    }    
+    }  
 }
 
 /// Struct containing Mouse tracking data

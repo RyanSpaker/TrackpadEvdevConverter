@@ -62,7 +62,6 @@ impl MouseManager{
                 match MouseDriver::new(name.clone(), path){
                     Ok(mouse) => {
                         let info = mouse.metadata.clone();
-                        mouse.lock();
                         let handle = Arc::new(tokio::sync::Mutex::new(mouse));
                         let abort = Arc::new(Mutex::new(AbortData{abort: false, err: None}));
                         let future_handle = handle.clone();
@@ -105,8 +104,6 @@ impl MouseManager{
             if let Some(task) = mouse.task.take(){
                 task.abort();
             }
-            let driver = mouse.driver.blocking_lock();
-            driver.unlock();
             if let Some(err) = error{
                 println!("Mouse {} Aborted with error: {:?}", *name, err);
             }
@@ -123,8 +120,6 @@ impl MouseManager{
             if let Some(task) = mouse.task.take(){
                 task.abort();
             }
-            let driver = mouse.driver.lock().await;
-            driver.unlock();
             if let Some(err) = error{
                 println!("Mouse {} Aborted with error: {:?}", *name, err);
             }
@@ -141,8 +136,6 @@ impl MouseManager{
             if let Some(task) = managed_mouse.task.take(){
                 task.abort();
             }
-            let driver = managed_mouse.driver.lock().await;
-            driver.unlock();
         }
     }
     /// asynchronous update loop for the mouse manager

@@ -31,7 +31,7 @@ pub async fn server() -> Result<(), Box<dyn Error>> {
     let mut manager = MouseManager::new(communicator.clone());
 
     // Setup DBus connection
-    let (resource, conn) = connection::new_session_sync()
+    let (resource, conn) = connection::new_system_sync()
         .map_err(|err| ServerError::DBusConnectionFailed(err))?;
     let dbus_handle = tokio::spawn(async {
         resource.await
@@ -48,7 +48,10 @@ pub async fn server() -> Result<(), Box<dyn Error>> {
     
     // General Server commands
     let process_interface = cr.register("com.cowsociety.virtual_mouse", |b: &mut IfaceBuilder<Arc<Mutex<Communicator>>>| {
-        b.method_with_cr_async("CreateNewMouse", ("name", "input-path",), ("name", "input-event-id", "output-event-id", "libinput-id"), |mut ctx, cr, (name, path,): (String, String,)| {
+        b.signal::<(u32,), _>("MouseCreated", ("input_id",));
+        b.signal::<(u32,), _>("MouseDeleted", ("input_id",));
+
+        b.method_with_cr_async("CreateNewMouse", ("name", "input-path",), ("name", "input-event-id", "output-event-id"), |mut ctx, cr, (name, path,): (String, String,)| {
             let data = cr.data_mut::<Arc<Mutex<Communicator>>>(&"/".into()).unwrap();
             let future = CommunicatorResultFuture{name: name.clone(), handle: data.clone()};
             let mut guard = data.lock().unwrap();
@@ -59,7 +62,9 @@ pub async fn server() -> Result<(), Box<dyn Error>> {
             async move {
                 match future.await{
                     Ok(data) => {
-                        return ctx.reply(Ok((data.name, data.input_id, data.output_id, data.libinput_id)));
+                        let signal = ctx.make_signal("MouseCreated", (data.input_id,));
+                        ctx.push_msg(signal);
+                        return ctx.reply(Ok((data.name, data.input_id, data.output_id)));
                     },
                     Err(err) => {
                         return ctx.reply(Err(MethodErr::failed(&err.to_string())));
@@ -67,9 +72,13 @@ pub async fn server() -> Result<(), Box<dyn Error>> {
                 }
             }
         });
-        b.method("StopMouse", ("name",), (), |_, data,  (name,): (String,)| {
+        b.method("StopMouse", ("name",), (), |ctx, data,  (name,): (String,)| {
             let mut guard = data.lock().unwrap();
             guard.dequeued_mice.insert(name.to_owned());
+            if let Some(info) = guard.current_mice.get(&name) {
+                let signal = ctx.make_signal("MouseDeleted", (info.input_id,));
+                ctx.push_msg(signal);
+            }
             if let Some(waker) = guard.dequeue_waker.take() {waker.wake();}
             Ok(())
         });
@@ -77,7 +86,7 @@ pub async fn server() -> Result<(), Box<dyn Error>> {
             let guard = data.lock().unwrap();
             let mut mice = vec![];
             for (_, info) in guard.current_mice.iter(){
-                mice.push((info.name.clone(), info.input_id, info.output_id, info.libinput_id));
+                mice.push((info.name.clone(), info.input_id, info.output_id));
             }
             // Return list of Mice objects
             Ok((mice,))
@@ -86,16 +95,24 @@ pub async fn server() -> Result<(), Box<dyn Error>> {
             // Return the server's process id
             Ok((process::id(),))
         });
-        b.method("Shutdown", (), (), |_, data, ()| {
+        b.method("Shutdown", (), (), |ctx, data, ()| {
             let mut guard = data.lock().unwrap();
+            for info in guard.current_mice.values() {
+                let signal = ctx.make_signal("MouseDeleted", (info.input_id,));
+                ctx.push_msg(signal);
+            }
             guard.shutdown.0 = true;
             if let Some(waker) = guard.shutdown.1.take() {waker.wake();}
             Ok(())
         });
-        b.method("Reset", (), (), |_, data, ()| {
+        b.method("Reset", (), (), |ctx, data, ()| {
             let mut guard = data.lock().unwrap();
             let names: Vec<String> = guard.current_mice.keys().cloned().collect();
             guard.dequeued_mice.extend(names);
+            for info in guard.current_mice.values() {
+                let signal = ctx.make_signal("MouseDeleted", (info.input_id,));
+                ctx.push_msg(signal);
+            }
             if let Some(waker) = guard.dequeue_waker.take() {waker.wake();}
             Ok(())
         });

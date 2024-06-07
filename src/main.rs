@@ -3,9 +3,9 @@ pub mod manager;
 pub mod communicator;
 pub mod server;
 pub mod client;
+pub mod session;
 
 use std::{env::args, error::Error, fmt::Display};
-
 use client::ClientCommand;
 
 /// Prints the help message
@@ -44,12 +44,28 @@ impl Display for AppError{
 }
 impl Error for AppError{}
 
+/*
+    System server: main server, creates a new relative mouse from libinput. 
+    Requries root user or input group to access event files
+
+    Session Server: secondary server that only runs if there is a display session. automatically disables trackpads using xinput.
+    Does not require root user
+
+    Client: used to interact with the session and system server
+    Does not require root user
+*/
+
 pub async fn app_logic() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = args().skip(1).collect::<Vec<String>>();
 
     //server
     if arguments.len() == 0 || arguments[0] == "--server" {
         return server::server().await;
+    }
+
+    //session server
+    if arguments[0] == "--session-server" {
+        return session::session_server().await;
     }
 
     let function: ClientCommand = match arguments[0].as_str() {

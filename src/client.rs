@@ -19,14 +19,18 @@ pub enum ClientCommand{
 pub enum ClientError{
     DBusConnectionFailed(dbus::Error),
     ServerNotFound(dbus::Error),
-    MethodCallFailed(dbus::Error)
+    MethodCallFailed(dbus::Error),
+    XInputCallError(std::io::Error),
+    XInputParseError
 }
 impl Display for ClientError{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let string = match self {
             ClientError::DBusConnectionFailed(err) => format!("Could not create system dbus connection. DBus error: {}", err),
             ClientError::ServerNotFound(err) => format!("Failed to find the server. DBus error: {}", err),
-            ClientError::MethodCallFailed(err) => format!("Failed to call the method. DBus error: {}", err)
+            ClientError::MethodCallFailed(err) => format!("Failed to call the method. DBus error: {}", err),
+            ClientError::XInputCallError(err) => format!("Failed to call the xinput tool. IO Error: {}", err),
+            ClientError::XInputParseError => format!("Failed to parse xinput data")
         };
         f.write_str(string.as_str())?;
         Ok(())
@@ -37,7 +41,7 @@ impl Error for ClientError{}
 /// Client code
 pub async fn client(function: ClientCommand) -> Result<(), Box<dyn std::error::Error>> {
     // Setup DBus connection
-    let (resource, conn) = connection::new_session_sync()
+    let (resource, conn) = connection::new_system_sync()
         .map_err(|err| ClientError::DBusConnectionFailed(err))?;
     let dbus_handle = tokio::spawn(async {
         resource.await
@@ -50,22 +54,22 @@ pub async fn client(function: ClientCommand) -> Result<(), Box<dyn std::error::E
     // Do the command
     match function {
         ClientCommand::New(name, path) => {
-            let (name, input_id, output_id, libinput_id): (String, u32, u32, u32) = proxy.method_call(
+            let (name, input_id, output_id): (String, u32, u32) = proxy.method_call(
                 "com.cowsociety.virtual_mouse", 
                 "CreateNewMouse", 
                 (name.as_str(), path.as_str())
             ).await.map_err(|err| ClientError::MethodCallFailed(err))?;
-            println!("Success: (name input_id output_id, libinput_id)");
-            println!("{} {} {} {}", name, input_id, output_id, libinput_id);
+            println!("Success: (name input_id output_id)");
+            println!("{} {} {}", name, input_id, output_id);
         }
         ClientCommand::List => {
-            let (list,): (Vec<(String, u32, u32, u32)>,) = proxy.method_call(
+            let (list,): (Vec<(String, u32, u32)>,) = proxy.method_call(
                 "com.cowsociety.virtual_mouse", 
                 "ListMice", 
                 ()).await.map_err(|err| ClientError::MethodCallFailed(err))?;
-            println!("Mice: (name input_id output_id libinput_id)");
-            for (name, input_id, output_id, libinput_id) in list.into_iter() {
-                println!("{} {} {} {}", name, input_id, output_id, libinput_id);
+            println!("Mice: (name input_id output_id)");
+            for (name, input_id, output_id) in list.into_iter() {
+                println!("{} {} {}", name, input_id, output_id);
             }
         }
         ClientCommand::Stop(name) => {
