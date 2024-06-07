@@ -38,14 +38,21 @@ pub async fn session_server() -> Result<(), Box<dyn Error>> {
         resource.await
     });
     // Setup callbacks to handle mouse creation and deletion events
-    conn.add_match(MatchRule::new_signal("com.cowsociety.virtual_mouse", "MouseCreated")).await?.cb(|_, (id,): (u32,)| {
-        toggle_mouse(id, false).is_ok()
+    let sig1 = conn.add_match(MatchRule::new_signal("com.cowsociety.virtual_mouse", "MouseCreated")).await?.cb(|_, (id,): (u32,)| {
+        if let Err(err) = toggle_mouse(id, false) {
+            println!("Error: {:?}", err);
+        }
+        true
     });
-    conn.add_match(MatchRule::new_signal("com.cowsociety.virtual_mouse", "MouseDeleted")).await?.cb(|_, (id,): (u32,)| {
-        toggle_mouse(id, true).is_ok()
+    let sig2 = conn.add_match(MatchRule::new_signal("com.cowsociety.virtual_mouse", "MouseDeleted")).await?.cb(|_, (id,): (u32,)| {
+        if let Err(err) = toggle_mouse(id, true) {
+            println!("Error: {:?}", err);
+        }
+        true
     });
     // Run forever
     dbus_handle.await?;
+    conn.remove_match(sig1.token()).await?; conn.remove_match(sig2.token()).await?;
     Ok(())
 }
 // Helper function to take an input id and use xinput to disable/enable the corresponding mouse
@@ -54,7 +61,9 @@ pub fn toggle_mouse(input_id: u32, enable: bool) -> Result<(), SessionServerErro
     let output = std::process::Command::new("xinput").args(["list", "--id-only"]).output()
         .map_err(|err| SessionServerError::XInputCallError(err))?;
     let output = String::from_utf8(output.stdout).map_err(|_| SessionServerError::XInputParseError)?;
-    let id = output.split("\n").filter(|id| {
+    let id = output.split("\n").map(|id| {
+        if id.parse::<u32>().is_ok() {id.to_string()} else {id.strip_prefix("∼ ").unwrap_or("No").to_string()}
+    }).filter(|id| {
         std::process::Command::new("xinput").args(["list-props", id]).output().ok().map(|output| {
             String::from_utf8(output.stdout).ok()
         }).flatten().is_some_and(|props| {
@@ -65,6 +74,7 @@ pub fn toggle_mouse(input_id: u32, enable: bool) -> Result<(), SessionServerErro
             }
         })
     }).next().map(|id| id.parse::<u32>().ok()).flatten().ok_or(SessionServerError::XInputParseError)?;
+    if enable {println!("Enabled mouse {}", id);} else {println!("Disabled mouse {}", id);}
     std::process::Command::new("xinput").args([(if enable {"--enable"} else {"--disable"}).to_string(), id.to_string()]).spawn().unwrap().wait().unwrap();
     Ok(())
 }
