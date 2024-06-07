@@ -67,7 +67,7 @@
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
           ];
-          libraries = lib.makeLibraryPath [libinput dbus];
+          libraries = pkgs.lib.makeLibraryPath [pkgs.libinput pkgs.dbus];
           postInstall = ''
             wrapProgram $out/bin/trackpad-evdev-converter \
               --set LD_LIBRARY_PATH : ${libraries}
