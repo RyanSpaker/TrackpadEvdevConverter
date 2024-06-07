@@ -67,7 +67,10 @@
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
           ];
+          libraries = lib.makeLibraryPath [libinput dbus];
           postInstall = ''
+            wrapProgram $out/bin/trackpad-evdev-converter \
+              --set LD_LIBRARY_PATH : ${libraries}
             mkdir -p $out/share/dbus-1/system.d
             cp ${src}/dbus.conf $out/share/dbus-1/system.d/com.cowsociety.virtual_mouse.conf
           '';
