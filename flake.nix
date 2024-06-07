@@ -70,8 +70,8 @@
           ];
           libraries = pkgs.lib.makeLibraryPath [pkgs.libinput pkgs.dbus];
           postInstall = ''
-            wrapProgram $out/bin/trackpad-evdev-converter \
-              --set LD_LIBRARY_PATH : ${libraries}
+            mv $out/bin/trackpad-evdev-converter $out/bin/.trackpad-evdev-converter
+            makeWrapper $out/bin/.trackpad-evdev-converter $out/bin/trackpad-evdev-converter --set LD_LIBRARY_PATH ${libraries}
             mkdir -p $out/share/dbus-1/system.d
             cp ${src}/dbus.conf $out/share/dbus-1/system.d/com.cowsociety.virtual_mouse.conf
           '';
