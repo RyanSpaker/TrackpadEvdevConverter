@@ -51,6 +51,7 @@
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [
             pkgs.pkg-config
+            pkgs.makeWrapper
           ];
           buildInputs = with pkgs; [
             libinput
