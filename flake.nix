@@ -52,8 +52,7 @@
             makeWrapper
           ];
           buildInputs = with pkgs; [
-            pkg-config
-            libinput
+            dbus
             rustc.llvmPackages.clang
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
