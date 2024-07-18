@@ -52,6 +52,7 @@
             makeWrapper
           ];
           buildInputs = with pkgs; [
+            pkg-config
             libinput
             rustc.llvmPackages.clang
             rustc.llvmPackages.bintools
