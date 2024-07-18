@@ -53,6 +53,7 @@
           ];
           buildInputs = with pkgs; [
             dbus
+            libinput
             rustc.llvmPackages.clang
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
