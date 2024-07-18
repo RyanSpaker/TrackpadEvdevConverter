@@ -28,6 +28,7 @@
             pkg-config
             dbus
             cargo-udeps
+            systemd
             git
             rustc.llvmPackages.clang
             rustc.llvmPackages.bintools
@@ -54,11 +55,12 @@
           buildInputs = with pkgs; [
             dbus
             libinput
+            systemd
             rustc.llvmPackages.clang
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
           ];
-          libraries = pkgs.lib.makeLibraryPath [pkgs.libinput pkgs.dbus];
+          libraries = pkgs.lib.makeLibraryPath [pkgs.libinput pkgs.dbus pkgs.systemd];
           postInstall = ''
             mv $out/bin/trackpad-evdev-converter $out/bin/.trackpad-evdev-converter
             makeWrapper $out/bin/.trackpad-evdev-converter $out/bin/trackpad-evdev-converter --set LD_LIBRARY_PATH ${libraries}
