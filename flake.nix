@@ -61,7 +61,7 @@
           libraries = pkgs.lib.makeLibraryPath [pkgs.libinput pkgs.dbus];
           postInstall = ''
             mv $out/bin/trackpad-evdev-converter $out/bin/.trackpad-evdev-converter
-            makeWrapper $out/bin/.trackpad-evdev-converter $out/bin/trackpad-evdev-converter --set LD_LIBRARY_PATH ${libraries} --set PATH ${pkgs.lib.makeBinPath (with pkgs; [ xorg.xinput ])}
+            makeWrapper $out/bin/.trackpad-evdev-converter $out/bin/trackpad-evdev-converter --set LD_LIBRARY_PATH ${libraries}
             mkdir -p $out/share/dbus-1/system.d
             cp ${src}/dbus.conf $out/share/dbus-1/system.d/org.cws.VirtualMouse.conf
           '';
