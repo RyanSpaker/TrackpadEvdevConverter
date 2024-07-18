@@ -253,7 +253,7 @@ impl Future for DestroyMiceFuture{
 /// Sets up the server
 pub async fn define_server(conn: Arc<SyncConnection>) -> Result<Arc<Mutex<ServerData>>, ServerError> {
     // get dbus name
-    conn.request_name("com.cws.VirtualMouse", false, false, true).await
+    conn.request_name("org.cws.VirtualMouse", false, false, true).await
         .map_err(|err| ServerError::ServerRequestNameFailed(err))?;
     // setup crossroads for managing interface
     let mut cr = Crossroads::new();
