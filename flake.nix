@@ -13,6 +13,9 @@
       in
       {
         devShells.default = with pkgs; mkShell rec {
+          nativeBuildInputs = [
+            pkg-config
+          ];
           buildInputs = [
             (rust-toolchain.withComponents [
               "cargo"
@@ -23,14 +26,9 @@
             ])
             libinput
             pkg-config
-            systemd
             dbus
             cargo-udeps
             git
-            udev udev.dev alsa-lib lutris
-            vulkan-tools vulkan-headers vulkan-loader vulkan-validation-layers
-            xorg.libX11 xorg.libXcursor xorg.libXi xorg.libXrandr # To use the x11 feature
-            libxkbcommon wayland # To use the wayland feature
             rustc.llvmPackages.clang
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
@@ -49,21 +47,11 @@
           version = "0.9.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
-          nativeBuildInputs = [
-            pkgs.pkg-config
-            pkgs.makeWrapper
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            makeWrapper
           ];
           buildInputs = with pkgs; [
-            libinput
-            pkg-config
-            systemd
-            dbus
-            cargo-udeps
-            git
-            udev udev.dev alsa-lib lutris
-            vulkan-tools vulkan-headers vulkan-loader vulkan-validation-layers
-            xorg.libX11 xorg.libXcursor xorg.libXi xorg.libXrandr # To use the x11 feature
-            libxkbcommon wayland # To use the wayland feature
             rustc.llvmPackages.clang
             rustc.llvmPackages.bintools
             (wrapBintoolsWith { bintools = mold; })
@@ -71,9 +59,9 @@
           libraries = pkgs.lib.makeLibraryPath [pkgs.libinput pkgs.dbus];
           postInstall = ''
             mv $out/bin/trackpad-evdev-converter $out/bin/.trackpad-evdev-converter
-            makeWrapper $out/bin/.trackpad-evdev-converter $out/bin/trackpad-evdev-converter --set LD_LIBRARY_PATH ${libraries}
+            makeWrapper $out/bin/.trackpad-evdev-converter $out/bin/trackpad-evdev-converter --set LD_LIBRARY_PATH ${libraries} --set PATH ${pkgs.lib.makeBinPath (with pkgs; [ xorg.xinput ])}
             mkdir -p $out/share/dbus-1/system.d
-            cp ${src}/dbus.conf $out/share/dbus-1/system.d/com.cowsociety.virtual_mouse.conf
+            cp ${src}/dbus.conf $out/share/dbus-1/system.d/org.cws.VirtualMouse.conf
           '';
         };
       }

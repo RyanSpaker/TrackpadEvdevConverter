@@ -1,7 +1,9 @@
-use std::{fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::{Path, PathBuf}};
-use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, AttributeSet, Device, EventStream, EventType, InputEvent, InputEventKind, Key, RelativeAxisType, Synchronization};
+use std::{collections::HashMap, error::Error, fmt::Display, fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::Path, sync::{Arc, Mutex}};
+use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, AttributeSet, Device, EventStream, EventType, InputEvent, Key, RelativeAxisType};
 use input::{event::{pointer::{ButtonState, PointerScrollEvent}, PointerEvent}, Event, Libinput, LibinputInterface};
 use libc::{O_RDONLY, O_RDWR, O_WRONLY};
+use tokio::task::{JoinHandle, LocalSet};
+use crate::server::{ServerData, ServerError, WorkFuture};
 
 /// Interface used by Libinput.
 pub struct Interface;
@@ -20,66 +22,107 @@ impl LibinputInterface for Interface {
     }
 }
 
+/// Error representing ways the mouse manager can fail
+#[derive(Debug)]
+pub enum MouseError{
+    MouseDestroyedeBeforeCreation(String, String),
+    FailedToAddPathAsLibinputDevice(String),
+    FailedToGetInputUdevDevice(String),
+    FailedToGetInputDevNode(String),
+    FailedToOpenEvdevDevice(String, std::io::Error),
+    FailedToCreateEventStream(String, std::io::Error),
+    FailedToCreateVirtualDeviceBuilder(std::io::Error),
+    FailedToAddRelativeAxes(std::io::Error),
+    FailedToAddKeys(std::io::Error),
+    FailedToBuildVirtualMouse(std::io::Error),
+    FailedToGetOutputPath(Option<std::io::Error>),
+    TestSourceReadError(std::io::Error),
+    LibinputDispatchError(std::io::Error),
+    EmitEventsError(std::io::Error)
+}
+impl Display for MouseError{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = f.write_str(&match self {
+            MouseError::MouseDestroyedeBeforeCreation(name, inputpath) => format!("The mouse: {}, with inputpath: {}, was queued for destruction before finishing creation. Not necessarily an error.", *name, *inputpath),
+            MouseError::FailedToAddPathAsLibinputDevice(path) => format!("Could not add input device path to the libinput context. Inputpath: {}", *path),
+            MouseError::FailedToGetInputUdevDevice(path) => format!("Could not get the UDev device from the input device: {}", *path),
+            MouseError::FailedToGetInputDevNode(path) => format!("Could not get devnode path from input udev device: {}", *path),
+            MouseError::FailedToOpenEvdevDevice(path, err) => format!("Could not open evdev device: {}, with err: {}", *path, *err),
+            MouseError::FailedToCreateEventStream(path, err) => format!("Failed to create event stream from evdev device: {}, with err: {}", *path, *err),
+            MouseError::FailedToCreateVirtualDeviceBuilder(err) => format!("Could not create a VirtualDeviceBuilder: {}", *err),
+            MouseError::FailedToAddRelativeAxes(err) => format!("Could not add relative axes to VirtualDeviceBuilder: {}", *err),
+            MouseError::FailedToAddKeys(err) => format!("Could not add keys to VirtualDeviceBuilder: {}", *err),
+            MouseError::FailedToBuildVirtualMouse(err) => format!("Could not build VirtualDeviceBuilder: {}", *err),
+            MouseError::FailedToGetOutputPath(err) => format!("Could not get the output path from the virtual device with err: {:?}", *err),
+            MouseError::TestSourceReadError(err) => format!("Could not read the next event from the evdev file: {}", *err),
+            MouseError::LibinputDispatchError(err) => format!("Could not dispatch libinput source: {}", *err),
+            MouseError::EmitEventsError(err) => format!("Could not emit events to the output device: {}", *err)
+        });
+        Ok(())
+    }
+}
+impl Error for MouseError{}
+
+/// Struct used to manager and update mice.
+/// Interacts with the server to create mice, and notify when mice fail
+pub struct MouseManager{
+    pub mice: HashMap<String, JoinHandle<()>>,
+    pub server: Arc<Mutex<ServerData>>
+}
+impl MouseManager{
+    pub fn new(server: Arc<Mutex<ServerData>>) -> Self{Self{mice: HashMap::new(), server}}
+    /// Runs the update loop in a local task set
+    pub async fn spawn_update_loop(&mut self) -> ServerError{
+        let local_set = LocalSet::new();
+        let data = self.server.clone();
+        local_set.run_until(self.update_loop(data)).await
+    }
+    /// Asynchronous function which continuosly handles mouse creation and deletion
+    pub async fn update_loop(&mut self, server: Arc<Mutex<ServerData>>) -> ServerError{
+        loop{
+            if let Err(err) = (WorkFuture{data: server.clone()}).await {return err;}
+            let Ok(mut guard) = server.lock() else {return ServerError::FailedToLockServerData;};
+            // destroy any mice the need to be by aborting their join handles
+            let destroy_queue = guard.destroy_queue.clone(); guard.destroy_queue.clear();
+            for (name, wakers) in destroy_queue {
+                if let Some(handle) = self.mice.remove(&name) {handle.abort();}
+                guard.mice.remove(&name);
+                for waker in wakers {waker.wake();}
+            }
+            // create needed mice
+            let create_queue = guard.create_queue.clone(); guard.create_queue.clear();
+            for (name, (inputpath, waker)) in  create_queue{
+                match MouseDriver::new(name.clone(), inputpath).await {
+                    Ok(mut mouse) => {
+                        guard.mice.insert(name.clone(), (mouse.metadata.input_path.clone(), mouse.metadata.output_path.clone()));
+                        let server_copy = server.clone();
+                        self.mice.insert(name.clone(), tokio::task::spawn_local(async move {
+                            let err = mouse.update_loop().await;
+                            if let Ok(mut guard) = server_copy.lock() {
+                                guard.update_errors.insert(name, (mouse.metadata.input_path, mouse.metadata.output_path, err));
+                                if let Some(waker) = guard.update_error_waker.take() {waker.wake();};
+                            }
+                        }));
+                    },
+                    Err(err) => {
+                        guard.creation_errors.insert(name, err);
+                    }
+                }
+                if let Some(waker) = waker {waker.wake();}
+            }
+        }
+    }
+}
+
 /// Struct containing a virtual mouse's metadata.  
 #[derive(Debug, Clone)]
 pub struct MouseInfo{
     /// Name of the virtual mouse, either specified in the creation request, or auto generated from the output id
     pub name: String,
-    /// evdev event number for the input device
-    pub input_id: u32,
-    /// evdev event number for the output device
-    pub output_id: u32
-}
-
-/// Errors from the virtual mouse creation process
-#[derive(Debug)]
-pub enum MouseCreationError{
-    /// The name specified was already in use by the system. Contains the conflicting name
-    NameInUse,
-    /// The path speicified was unable to be added to the libinput context as a device
-    FailedToAddPathAsLibinputDevice,
-    /// The path could not be opened by the evdev crate as an evdev device
-    FailedToOpenEvdevDevice(std::io::Error),
-    /// After opening the device, it could not be turned into an event stream
-    FailedToCreateEventStream(std::io::Error),
-    /// VirtualDeviceBuilder failed to create a virtual device
-    FailedToCreateVirtualDevice(std::io::Error),
-    /// Could not parse the sysname of the input device for an event id
-    FailedToGetInputID(String),
-    /// Could not get the libinput id from the xinput command line tool
-    FailedToGetLibinputID,
-    /// Could not get the virtual device's syspath
-    FailedToGetOutputSyspath(std::io::Error),
-    /// Could not get the output event id from the output's syspath
-    FailedToGetOutputIDFromSyspath(PathBuf),
-    /// The program had a future awaiting a mouse that is not queued, created, or returned an error
-    AsyncProgramError
-}
-impl ToString for MouseCreationError{
-    fn to_string(&self) -> String {
-        match self {
-            MouseCreationError::NameInUse => "Name is already used".to_string(),
-            MouseCreationError::FailedToAddPathAsLibinputDevice => "Path was unable to be added to the libinput context as a device".to_string(),
-            MouseCreationError::FailedToOpenEvdevDevice(err) => format!("Evdev device failed to open: {}", err),
-            MouseCreationError::FailedToCreateEventStream(err) => format!("Event Stream could not be created: {}", err),
-            MouseCreationError::FailedToCreateVirtualDevice(err) => format!("Virtual device could not be created: {}", err),
-            MouseCreationError::FailedToGetInputID(err) => format!("Could not get input id: {}", err),
-            MouseCreationError::FailedToGetLibinputID => format!("Could not get libinput id from the xinput command line tool"),
-            MouseCreationError::FailedToGetOutputSyspath(err) => format!("Could not get output syspath: {}", err),
-            MouseCreationError::FailedToGetOutputIDFromSyspath(err) => format!("Could not get output id from syspath: {:?}", err),
-            MouseCreationError::AsyncProgramError => "Future created for mouse that is not queued, created, or failed".to_string(),
-        }
-    }
-}
-/// Error types returned by the Mouse Driver's poll update function
-#[derive(Debug)]
-pub enum MouseDriverUpdateError{
-    /// Evdev event stream was unable to poll the events
-    TestSourceReadError(std::io::Error),
-    /// The libinput context was unable to dispatch for events
-    DataSourceDispatchError(std::io::Error),
-    /// The virtual device was unable to emit events
-    EmitEventsError(std::io::Error)
+    /// evdev event file path for the input device
+    pub input_path: String,
+    /// evdev event file path for the output device
+    pub output_path: String
 }
 
 /// Struct containing virtual mouse data.
@@ -97,61 +140,43 @@ pub struct MouseDriver{
 }
 impl MouseDriver{
     /// Create a new mouse driver
-    pub fn new(name: String, input_path: String) -> Result<Self, MouseCreationError>{
+    pub async fn new(name: String, input: String) -> Result<Self, MouseError>{
         // Get Libinput setup
         let mut data_source = Libinput::new_from_path(Interface);
-        let device = data_source.path_add_device(&input_path).ok_or(MouseCreationError::FailedToAddPathAsLibinputDevice)?;
-        // Get the input event id
-        fn sysname_to_id(sysname: String) -> Result<u32, MouseCreationError> {
-            sysname.clone().strip_prefix("event")
-                .ok_or_else(|| MouseCreationError::FailedToGetInputID(sysname.clone()))
-                .and_then(|val| val.parse::<u32>().or_else(|_| Err(MouseCreationError::FailedToGetInputID(sysname.clone()))))
-        }
-        let input_id = sysname_to_id(device.sysname().to_string())?;
+        let device = data_source.path_add_device(&input).ok_or(MouseError::FailedToAddPathAsLibinputDevice(input.clone()))?;
+        // get real inputpath
+        let input_path = unsafe{device.udev_device()}
+            .ok_or(MouseError::FailedToGetInputUdevDevice(input.clone()))?.devnode()
+            .ok_or(MouseError::FailedToGetInputDevNode(input))?.to_string_lossy().to_string();
         // Get evdev test source setup
         let test_source = Device::open(input_path.clone())
-            .map_err(|err| {MouseCreationError::FailedToOpenEvdevDevice(err)})?
-            .into_event_stream().map_err(|err| MouseCreationError::FailedToCreateEventStream(err))?;
+            .map_err(|err| {MouseError::FailedToOpenEvdevDevice(input_path.clone(), err)})?
+            .into_event_stream().map_err(|err| MouseError::FailedToCreateEventStream(input_path.clone(), err))?;
         // Create the virtual mouse device
-        fn create_virtual_device(name: String) -> std::io::Result<VirtualDevice> {
-            VirtualDeviceBuilder::new()?.name(("TPtoMouse ".to_owned() + name.as_str()).as_str())
-                .with_relative_axes(&AttributeSet::from_iter([
-                    RelativeAxisType::REL_X,
-                    RelativeAxisType::REL_Y,
-                    RelativeAxisType::REL_WHEEL,
-                    RelativeAxisType::REL_WHEEL_HI_RES,
-                    RelativeAxisType::REL_HWHEEL,
-                    RelativeAxisType::REL_HWHEEL_HI_RES
-                ]))?
-                .with_keys(&AttributeSet::from_iter([
-                    Key::BTN_LEFT,
-                    Key::BTN_RIGHT,
-                    Key::BTN_MIDDLE
-                ]))?
-                .build()
-        }
-        let mut output = create_virtual_device(name.clone()).map_err(|err| MouseCreationError::FailedToCreateVirtualDevice(err))?;
+        let mut output = VirtualDeviceBuilder::new()
+            .map_err(|err| MouseError::FailedToCreateVirtualDeviceBuilder(err))?
+            .name(&("VirtualMouse-".to_owned()+&name))
+            .with_relative_axes(&AttributeSet::from_iter([
+                RelativeAxisType::REL_X,
+                RelativeAxisType::REL_Y,
+                RelativeAxisType::REL_WHEEL,
+                RelativeAxisType::REL_WHEEL_HI_RES,
+                RelativeAxisType::REL_HWHEEL,
+                RelativeAxisType::REL_HWHEEL_HI_RES
+            ])).map_err(|err| MouseError::FailedToAddRelativeAxes(err))?
+            .with_keys(&AttributeSet::from_iter([
+                Key::BTN_LEFT,
+                Key::BTN_RIGHT,
+                Key::BTN_MIDDLE
+            ])).map_err(|err| MouseError::FailedToAddKeys(err))?
+            .build().map_err(|err| MouseError::FailedToBuildVirtualMouse(err))?;
         // Get the output event id
-        let syspath = output.get_syspath().map_err(|err| MouseCreationError::FailedToGetOutputSyspath(err))?;
-        fn get_output_id(syspath: PathBuf) -> std::io::Result<u32>{
-            let id_string = syspath.clone().read_dir()?.filter_map(|entry| {
-                match entry {
-                    Ok(dir) => {
-                        match dir.file_name().into_string() {
-                            Ok(name) => {
-                                name.strip_prefix("event").map(|id| id.to_string())
-                            },
-                            Err(_) => {None}
-                        }
-                    },
-                    Err(_) => {None}
-                }
-            }).next().ok_or(std::io::Error::from_raw_os_error(0))?;
-            id_string.parse::<u32>().map_err(|_| std::io::Error::from_raw_os_error(0))
-        }
-        let output_id = get_output_id(syspath.clone()).map_err(|_| MouseCreationError::FailedToGetOutputIDFromSyspath(syspath))?;
+        let output_path = output.enumerate_dev_nodes().await
+            .map_err(|err| MouseError::FailedToGetOutputPath(Some(err)))?
+            .next_entry().await.map_err(|err| MouseError::FailedToGetOutputPath(Some(err)))?
+            .ok_or(MouseError::FailedToGetOutputPath(None))?.to_string_lossy().to_string();
 
-        let metadata = MouseInfo{name, input_id, output_id};
+        let metadata = MouseInfo{name, input_path, output_path};
 
         Ok(Self{
             metadata,
@@ -161,22 +186,17 @@ impl MouseDriver{
             movement: MouseMovement::default()
         })
     }
-
-    /// Asynchronously waits for the next syn report to happen for the trackpad input device
-    pub async fn await_sync_event(&mut self) -> Result<(), MouseDriverUpdateError>{
-        loop{
-            match self.test_source.next_event().await {
-                Err(err) => {return Err(MouseDriverUpdateError::TestSourceReadError(err));},
-                Ok(event) => {if event.kind() == InputEventKind::Synchronization(Synchronization::SYN_REPORT) {return Ok(());}}
-            }
-        }
+    /// Asynchronously waits for the next event to happen for the trackpad input device
+    pub async fn await_sync_event(&mut self) -> Result<(), MouseError>{
+        self.test_source.next_event().await.map_err(|err| MouseError::TestSourceReadError(err))?;
+        Ok(())
     }
     /// Poll function to update the mouse endlessly until it errors out
-    pub async fn update_loop(&mut self) -> MouseDriverUpdateError {
+    pub async fn update_loop(&mut self) -> MouseError {
         loop{
             if let Err(err) = self.await_sync_event().await {return err;};
 
-            if let Err(err) = self.data_source.dispatch() {return MouseDriverUpdateError::DataSourceDispatchError(err);}
+            if let Err(err) = self.data_source.dispatch().map_err(|err| MouseError::LibinputDispatchError(err)) {return err;};
 
             let events: Vec<Event> = self.data_source.by_ref().collect();
             for event in events{
@@ -185,7 +205,7 @@ impl MouseDriver{
             // emit mouse events
             let events = self.movement.get_output_events();
             if events.len() > 0 {
-                if let Err(err) = self.output.emit(&events) {return MouseDriverUpdateError::EmitEventsError(err);}
+                if let Err(err) = self.output.emit(&events).map_err(|err| MouseError::EmitEventsError(err)) {return err;};
             }
         }
     }  
