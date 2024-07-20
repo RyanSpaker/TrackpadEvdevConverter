@@ -62,7 +62,7 @@ pub async fn cli(command: Command) -> Result<(), CliError> {
             }
         }
         Command::Stop(name) => {
-            proxy.method_call(
+            let _: (String, String, String) = proxy.method_call(
                 "org.cws.VirtualMouse.Manager", 
                 "DestroyMouse", 
                 (name,)).await.map_err(|err| CliError::MethodCallFailed(err))?;

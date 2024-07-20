@@ -175,6 +175,7 @@ impl MouseDriver{
             .map_err(|err| MouseError::FailedToGetOutputPath(Some(err)))?
             .next_entry().await.map_err(|err| MouseError::FailedToGetOutputPath(Some(err)))?
             .ok_or(MouseError::FailedToGetOutputPath(None))?.to_string_lossy().to_string();
+        let output_path = "/dev/input/event".to_string()+output_path.split("event").last().ok_or(MouseError::FailedToGetOutputPath(None))?;
 
         let metadata = MouseInfo{name, input_path, output_path};
 
