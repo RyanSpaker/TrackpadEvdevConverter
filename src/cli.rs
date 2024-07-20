@@ -3,7 +3,7 @@
     It is reponsible for automatically disabling/enabling mice that the server creates
 */
 use std::{error::Error, fmt::Display, time::Duration};
-use dbus::nonblock;
+use dbus::nonblock::Proxy;
 use dbus_tokio::connection;
 
 
@@ -19,13 +19,15 @@ pub enum Command{
 #[derive(Debug)]
 pub enum CliError{
     FailedToConnectToSystemBus(dbus::Error),
-    MethodCallFailed(dbus::Error)
+    MethodCallFailed(dbus::Error),
+    FailedToStartServer(dbus::Error)
 }
 impl Display for CliError{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let _ = f.write_str(&match self {
             CliError::FailedToConnectToSystemBus(err) => format!("Could not connect to the system dbus: {}", *err),
-            CliError::MethodCallFailed(err) => format!("Method call failed: {}", *err)
+            CliError::MethodCallFailed(err) => format!("Method call failed: {}", *err),
+            CliError::FailedToStartServer(err) => format!("Failed to start the trackpad-evdev-converter.service: {}", *err)
         });
         Ok(())
     }
@@ -38,8 +40,12 @@ pub async fn cli(command: Command) -> Result<(), CliError> {
     let (r, conn) = connection::new_system_sync()
         .map_err(|err| CliError::FailedToConnectToSystemBus(err))?;
     let dbus_handle = tokio::spawn(r);
+    // start server just in case
+    let proxy = Proxy::new("org.freedesktop.systemd1", "/org/freedesktop/systemd1", Duration::from_secs(2), conn.clone());
+    let _: (dbus::Path,) = proxy.method_call("org.freedesktop.systemd1.Manager", "StartUnit", ("trackpad-evdev-converter.service", "replace")).await
+        .map_err(|err| CliError::FailedToStartServer(err))?;
     // Setup proxy
-    let proxy = nonblock::Proxy::new("org.cws.VirtualMouse", "/org/cws/VirtualMouse", Duration::from_secs(2), conn.clone());
+    let proxy = Proxy::new("org.cws.VirtualMouse", "/org/cws/VirtualMouse", Duration::from_secs(2), conn.clone());
     // Do the command
     match command {
         Command::New(name, path) => {

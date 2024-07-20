@@ -63,9 +63,9 @@ pub async fn app() -> Result<(), AppError> {
             return Err(AppError::ServerNotRunAsRoot);
         }
         let server_state = server::server().await.map_err(|err| AppError::ServerError(err))?;
-        let err = mouse::MouseManager::new(server_state.data.clone()).spawn_update_loop().await;
+        let result = mouse::MouseManager::new(server_state.data.clone()).spawn_update_loop().await;
         // killing is the only correct way to end the program, as it shouldnt end by itself
-        return Err(AppError::ServerError(err));
+        return result.map_err(|err| AppError::ServerError(err));
     }
 
     //session server

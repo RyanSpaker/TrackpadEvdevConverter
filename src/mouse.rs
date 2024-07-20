@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, fmt::Display, fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::Path, sync::{Arc, Mutex}};
+use std::{collections::HashMap, error::Error, fmt::Display, fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::Path, sync::{Arc, Mutex}, time::Duration};
 use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, AttributeSet, Device, EventStream, EventType, InputEvent, Key, RelativeAxisType};
 use input::{event::{pointer::{ButtonState, PointerScrollEvent}, PointerEvent}, Event, Libinput, LibinputInterface};
 use libc::{O_RDONLY, O_RDWR, O_WRONLY};
@@ -72,16 +72,26 @@ pub struct MouseManager{
 impl MouseManager{
     pub fn new(server: Arc<Mutex<ServerData>>) -> Self{Self{mice: HashMap::new(), server}}
     /// Runs the update loop in a local task set
-    pub async fn spawn_update_loop(&mut self) -> ServerError{
+    pub async fn spawn_update_loop(&mut self) -> Result<(), ServerError>{
         let local_set = LocalSet::new();
         let data = self.server.clone();
         local_set.run_until(self.update_loop(data)).await
     }
     /// Asynchronous function which continuosly handles mouse creation and deletion
-    pub async fn update_loop(&mut self, server: Arc<Mutex<ServerData>>) -> ServerError{
+    pub async fn update_loop(&mut self, server: Arc<Mutex<ServerData>>) -> Result<(), ServerError>{
         loop{
-            if let Err(err) = (WorkFuture{data: server.clone()}).await {return err;}
-            let Ok(mut guard) = server.lock() else {return ServerError::FailedToLockServerData;};
+            // return if we spend 10 seconds without any mice
+            if self.mice.is_empty() {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                        return Ok(());
+                    },
+                    result = WorkFuture{data: server.clone()} => {result?;}
+                }
+            }else {
+                WorkFuture{data: server.clone()}.await?;
+            }
+            let Ok(mut guard) = server.lock() else {return Err(ServerError::FailedToLockServerData);};
             // destroy any mice the need to be by aborting their join handles
             let destroy_queue = guard.destroy_queue.clone(); guard.destroy_queue.clear();
             for (name, wakers) in destroy_queue {
