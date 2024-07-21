@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, fmt::Display, fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::Path, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::HashMap, error::Error, fmt::Display, fs::{File, OpenOptions}, os::{fd::OwnedFd, unix::fs::OpenOptionsExt}, path::Path, sync::{Arc, Mutex}};
 use evdev::{uinput::{VirtualDevice, VirtualDeviceBuilder}, AttributeSet, Device, EventStream, EventType, InputEvent, Key, RelativeAxisType};
 use input::{event::{pointer::{ButtonState, PointerScrollEvent}, PointerEvent}, Event, Libinput, LibinputInterface};
 use libc::{O_RDONLY, O_RDWR, O_WRONLY};
@@ -80,17 +80,7 @@ impl MouseManager{
     /// Asynchronous function which continuosly handles mouse creation and deletion
     pub async fn update_loop(&mut self, server: Arc<Mutex<ServerData>>) -> Result<(), ServerError>{
         loop{
-            // return if we spend 10 seconds without any mice
-            if self.mice.is_empty() {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                        return Ok(());
-                    },
-                    result = WorkFuture{data: server.clone()} => {result?;}
-                }
-            }else {
-                WorkFuture{data: server.clone()}.await?;
-            }
+            WorkFuture{data: server.clone()}.await?;
             let Ok(mut guard) = server.lock() else {return Err(ServerError::FailedToLockServerData);};
             // destroy any mice the need to be by aborting their join handles
             let destroy_queue = guard.destroy_queue.clone(); guard.destroy_queue.clear();

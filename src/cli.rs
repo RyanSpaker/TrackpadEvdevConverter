@@ -19,15 +19,13 @@ pub enum Command{
 #[derive(Debug)]
 pub enum CliError{
     FailedToConnectToSystemBus(dbus::Error),
-    MethodCallFailed(dbus::Error),
-    FailedToStartServer(dbus::Error)
+    MethodCallFailed(dbus::Error)
 }
 impl Display for CliError{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let _ = f.write_str(&match self {
             CliError::FailedToConnectToSystemBus(err) => format!("Could not connect to the system dbus: {}", *err),
-            CliError::MethodCallFailed(err) => format!("Method call failed: {}", *err),
-            CliError::FailedToStartServer(err) => format!("Failed to start the trackpad-evdev-converter.service: {}", *err)
+            CliError::MethodCallFailed(err) => format!("Method call failed: {}", *err)
         });
         Ok(())
     }

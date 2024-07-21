@@ -1,5 +1,0 @@
-[D-BUS Service]
-Name=org.cws.VirtualMouse
-Exec=trackpad-evdev-converter
-SystemdService=dbus-trackpad-evdev-converter.service
-User=root
