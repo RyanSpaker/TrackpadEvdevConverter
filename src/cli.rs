@@ -40,10 +40,6 @@ pub async fn cli(command: Command) -> Result<(), CliError> {
     let (r, conn) = connection::new_system_sync()
         .map_err(|err| CliError::FailedToConnectToSystemBus(err))?;
     let dbus_handle = tokio::spawn(r);
-    // start server just in case
-    let proxy = Proxy::new("org.freedesktop.systemd1", "/org/freedesktop/systemd1", Duration::from_secs(2), conn.clone());
-    let _: (dbus::Path,) = proxy.method_call("org.freedesktop.systemd1.Manager", "StartUnit", ("trackpad-evdev-converter.service", "replace")).await
-        .map_err(|err| CliError::FailedToStartServer(err))?;
     // Setup proxy
     let proxy = Proxy::new("org.cws.VirtualMouse", "/org/cws/VirtualMouse", Duration::from_secs(2), conn.clone());
     // Do the command
