@@ -39,7 +39,8 @@ pub enum AppError{
     SessionError(SessionError),
     CliError(CliError),
     FailedToConnectToSystemBus(dbus::Error),
-    FailedToStartServer(dbus::Error)
+    FailedToStartServer(dbus::Error),
+    FailedToStartSession(dbus::Error)
 }
 impl Display for AppError{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -50,7 +51,8 @@ impl Display for AppError{
             AppError::SessionError(err) => format!("Session server returned with err: {}", *err),
             AppError::CliError(err) => format!("The command failed with err: {}", *err),
             AppError::FailedToConnectToSystemBus(err) => format!("Could not connect to system dbus: {}", *err),
-            AppError::FailedToStartServer(err) => format!("could not start trackpad-evdev-converter.service: {}", *err)
+            AppError::FailedToStartServer(err) => format!("could not start trackpad-evdev-converter.service: {}", *err),
+            AppError::FailedToStartSession(err) => format!("Could not start session service: trackpad-evdev-converter.service: {}", *err)
         })?;
         Ok(())
     }
@@ -62,17 +64,24 @@ pub async fn app() -> Result<(), AppError> {
 
     // start server using systemd
     if arguments.len() == 0 {
-        if !Uid::effective().is_root() {
-            return Err(AppError::ServerNotRunAsRoot);
+        if Uid::effective().is_root() {
+            let (r, conn) = connection::new_system_sync()
+                .map_err(|err| AppError::FailedToConnectToSystemBus(err))?;
+            let dbus_handle = tokio::spawn(r);
+            // Setup proxy
+            let proxy = Proxy::new("org.freedesktop.systemd1", "/org/freedesktop/systemd1", Duration::from_secs(2), conn.clone());
+            let _:(dbus::Path,) = proxy.method_call("org.freedesktop.systemd1.Manager", "StartUnit", ("trackpad-evdev-converter.service", "replace")).await
+                .map_err(|err| AppError::FailedToStartServer(err))?;
+            dbus_handle.abort();
         }
-        let (r, conn) = connection::new_system_sync()
-            .map_err(|err| AppError::FailedToConnectToSystemBus(err))?;
-        let dbus_handle = tokio::spawn(r);
-        // Setup proxy
-        let proxy = Proxy::new("org.freedesktop.systemd1", "/org/freedesktop/systemd1", Duration::from_secs(2), conn.clone());
-        let _:(dbus::Path,) = proxy.method_call("org.freedesktop.systemd1.Manager", "StartUnit", ("trackpad-evdev-converter.service", "replace")).await
-            .map_err(|err| AppError::FailedToStartServer(err))?;
-        dbus_handle.abort();
+        if let Ok((r, conn)) = connection::new_session_sync() {
+            let dbus_handle = tokio::spawn(r);
+            // Setup proxy
+            let proxy = Proxy::new("org.freedesktop.systemd1", "/org/freedesktop/systemd1", Duration::from_secs(2), conn.clone());
+            let _:(dbus::Path,) = proxy.method_call("org.freedesktop.systemd1.Manager", "StartUnit", ("trackpad-evdev-converter.service", "replace")).await
+                .map_err(|err| AppError::FailedToStartSession(err))?;
+            dbus_handle.abort();
+        } 
         return Ok(());
     }
 
